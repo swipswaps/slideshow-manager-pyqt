@@ -86,11 +86,12 @@ class SlideshowManager(QMainWindow):
         self.log_events = []
 
         # Default FFmpeg command (uses image2 demuxer with numbered files)
+        # Includes padding to handle odd dimensions and scaling to 1920x1080
         self.default_ffmpeg_cmd = (
             "ffmpeg -y -loglevel error -framerate 1/5 "
             "-i %04d.png "
             "-vf \"format=yuv420p,scale='min(1920,iw*min(1920/iw\\,1080/ih))':'min(1080,ih*min(1920/iw\\,1080/ih))':force_original_aspect_ratio=decrease,pad=1920:1080:(1920-iw)/2:(1080-ih)/2\" "
-            "-c:v libx264 -r 30 -pix_fmt yuv420p output.mp4"
+            "-c:v libx264 -r 30 -pix_fmt yuv420p -y output.mp4"
         )
 
         # Load configuration
@@ -469,7 +470,7 @@ class SlideshowManager(QMainWindow):
             self.log_event(f"Added {len(files)} image(s)")
     
     def create_slideshow(self):
-        """Create slideshow from images using FFmpeg."""
+        """Create slideshow from images using FFmpeg (runs in background thread)."""
         if not self.images:
             self.log_event("❌ No images available")
             return
@@ -486,6 +487,12 @@ class SlideshowManager(QMainWindow):
             self.log_event("❌ FFmpeg command is empty")
             return
 
+        # Run in background thread to prevent UI lockup
+        thread = threading.Thread(target=self._create_slideshow_worker, args=(ffmpeg_cmd,), daemon=True)
+        thread.start()
+
+    def _create_slideshow_worker(self, ffmpeg_cmd):
+        """Worker thread for slideshow creation."""
         # Generate output filename
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         output_file = OUTPUT_DIR / f"slideshow_{timestamp}.mp4"
