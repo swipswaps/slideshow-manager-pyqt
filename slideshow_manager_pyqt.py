@@ -20,7 +20,8 @@ import tempfile
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QListWidget, QListWidgetItem, QFileDialog,
                              QDialog, QLineEdit, QComboBox, QSpinBox, QCheckBox, QTabWidget,
-                             QScrollArea, QGridLayout, QSplitter, QMessageBox, QInputDialog)
+                             QScrollArea, QGridLayout, QSplitter, QMessageBox, QInputDialog,
+                             QTextEdit, QPlainTextEdit)
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer, QRect
 from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor, QPalette, QImage
 from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
@@ -74,24 +75,31 @@ class SlideshowManager(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Slideshow Manager")
-        self.setGeometry(100, 100, 1200, 800)
-        
+        self.setGeometry(100, 100, 1200, 900)
+
         # Data
         self.images = []
         self.hidden_images = set()
         self.available_videos = []
         self.video_players = []
         self.config = {}
-        
+        self.log_events = []
+
+        # Default FFmpeg command
+        self.default_ffmpeg_cmd = (
+            "ffmpeg -framerate 1 -pattern_type glob -i '*.png' "
+            "-c:v libx264 -pix_fmt yuv420p -y output.mp4"
+        )
+
         # Load configuration
         self.load_config()
         self.detect_video_players()
-        
+
         # Setup UI
         self.setup_ui()
         self.load_images()
         self.show_available_videos()
-        
+
         logger.info("Slideshow Manager started")
     
     def setup_ui(self):
@@ -130,23 +138,28 @@ class SlideshowManager(QMainWindow):
         
         # Splitter for resizable sections
         splitter = QSplitter(Qt.Vertical)
-        
+
         # Video selection panel
         video_panel = self.create_video_panel()
         splitter.addWidget(video_panel)
-        
+
+        # FFmpeg command panel
+        ffmpeg_panel = self.create_ffmpeg_panel()
+        splitter.addWidget(ffmpeg_panel)
+
         # Thumbnails panel with statistics
         thumbnails_panel = self.create_thumbnails_panel()
         splitter.addWidget(thumbnails_panel)
-        
+
         # Event log panel
         log_panel = self.create_log_panel()
         splitter.addWidget(log_panel)
-        
+
         splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
-        splitter.setStretchFactor(2, 1)
-        
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 2)
+        splitter.setStretchFactor(3, 1)
+
         main_layout.addWidget(splitter)
         
         # Apply dark theme
@@ -156,26 +169,58 @@ class SlideshowManager(QMainWindow):
         """Create video selection panel."""
         panel = QWidget()
         layout = QVBoxLayout()
-        
+
         label = QLabel("📹 Select Video to Play")
         label.setFont(QFont("Arial", 11, QFont.Bold))
         layout.addWidget(label)
-        
+
         self.video_list = QListWidget()
         layout.addWidget(self.video_list)
-        
+
         btn_layout = QHBoxLayout()
         btn_play = RoundedButton("▶️ Play Selected")
         btn_play.clicked.connect(self.play_selected_video)
         btn_layout.addWidget(btn_play)
-        
+
         btn_folder = RoundedButton("📁 Open Folder")
         btn_folder.clicked.connect(self.open_videos_folder)
         btn_layout.addWidget(btn_folder)
-        
+
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
-        
+
+        panel.setLayout(layout)
+        return panel
+
+    def create_ffmpeg_panel(self):
+        """Create FFmpeg command editor panel."""
+        panel = QWidget()
+        layout = QVBoxLayout()
+
+        label = QLabel("⚙️ FFmpeg Command")
+        label.setFont(QFont("Arial", 11, QFont.Bold))
+        layout.addWidget(label)
+
+        # FFmpeg command editor
+        self.ffmpeg_cmd_edit = QPlainTextEdit()
+        self.ffmpeg_cmd_edit.setPlainText(self.config.get('ffmpeg_cmd', self.default_ffmpeg_cmd))
+        self.ffmpeg_cmd_edit.setMaximumHeight(80)
+        layout.addWidget(self.ffmpeg_cmd_edit)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+
+        btn_reset = RoundedButton("🔄 Reset to Default")
+        btn_reset.clicked.connect(self.reset_ffmpeg_command)
+        btn_layout.addWidget(btn_reset)
+
+        btn_save = RoundedButton("💾 Save Command")
+        btn_save.clicked.connect(self.save_ffmpeg_command)
+        btn_layout.addWidget(btn_save)
+
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
         panel.setLayout(layout)
         return panel
     
@@ -422,14 +467,60 @@ class SlideshowManager(QMainWindow):
             self.log_event(f"Added {len(files)} image(s)")
     
     def create_slideshow(self):
-        """Create slideshow from images."""
+        """Create slideshow from images using FFmpeg."""
         if not self.images:
-            self.log_event("No images available")
+            self.log_event("❌ No images available")
             return
-        
-        self.log_event("Creating slideshow...")
-        # TODO: Implement slideshow creation with FFmpeg
-        self.log_event("Slideshow created successfully")
+
+        # Check if FFmpeg is installed
+        if not shutil.which('ffmpeg'):
+            self.log_event("❌ FFmpeg not installed")
+            QMessageBox.critical(self, "Error", "FFmpeg is not installed. Please install it first.")
+            return
+
+        # Get the FFmpeg command
+        ffmpeg_cmd = self.ffmpeg_cmd_edit.toPlainText().strip()
+        if not ffmpeg_cmd:
+            self.log_event("❌ FFmpeg command is empty")
+            return
+
+        # Generate output filename
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_file = OUTPUT_DIR / f"slideshow_{timestamp}.mp4"
+
+        try:
+            self.log_event(f"🎬 Creating slideshow: {output_file.name}")
+
+            # Replace output placeholder in command
+            cmd = ffmpeg_cmd.replace('output.mp4', str(output_file))
+
+            # Change to images directory and run FFmpeg
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                cwd=str(IMAGES_DIR),
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+
+            if result.returncode == 0:
+                self.log_event(f"✅ Slideshow created: {output_file.name}")
+                self.show_available_videos()
+                logger.info(f"Slideshow created successfully: {output_file}")
+            else:
+                error_msg = result.stderr if result.stderr else "Unknown error"
+                self.log_event(f"❌ FFmpeg error: {error_msg[:100]}")
+                logger.error(f"FFmpeg error: {error_msg}")
+                QMessageBox.critical(self, "FFmpeg Error", f"Error creating slideshow:\n{error_msg[:200]}")
+
+        except subprocess.TimeoutExpired:
+            self.log_event("❌ Slideshow creation timed out")
+            logger.error("FFmpeg command timed out")
+        except Exception as e:
+            self.log_event(f"❌ Error: {str(e)[:50]}")
+            logger.error(f"Error creating slideshow: {e}")
+            QMessageBox.critical(self, "Error", f"Error creating slideshow:\n{str(e)}")
     
     def open_videos_folder(self):
         """Open videos folder in file manager."""
@@ -438,6 +529,24 @@ class SlideshowManager(QMainWindow):
             logger.info(f"Opened folder: {OUTPUT_DIR}")
         except Exception as e:
             logger.error(f"Error opening folder: {e}")
+
+    def save_ffmpeg_command(self):
+        """Save the FFmpeg command to config."""
+        cmd = self.ffmpeg_cmd_edit.toPlainText().strip()
+        if not cmd:
+            self.log_event("❌ FFmpeg command cannot be empty")
+            return
+
+        self.config['ffmpeg_cmd'] = cmd
+        self.save_config()
+        self.log_event("✅ FFmpeg command saved")
+        logger.info("FFmpeg command saved to config")
+
+    def reset_ffmpeg_command(self):
+        """Reset FFmpeg command to default."""
+        self.ffmpeg_cmd_edit.setPlainText(self.default_ffmpeg_cmd)
+        self.log_event("🔄 FFmpeg command reset to default")
+        logger.info("FFmpeg command reset to default")
     
     def show_settings(self):
         """Show settings dialog."""
