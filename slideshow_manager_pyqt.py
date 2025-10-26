@@ -85,10 +85,12 @@ class SlideshowManager(QMainWindow):
         self.config = {}
         self.log_events = []
 
-        # Default FFmpeg command
+        # Default FFmpeg command (uses image2 demuxer with numbered files)
         self.default_ffmpeg_cmd = (
-            "ffmpeg -framerate 1 -pattern_type glob -i '*.png' "
-            "-c:v libx264 -pix_fmt yuv420p -y output.mp4"
+            "ffmpeg -y -loglevel error -framerate 1/5 "
+            "-i %04d.png "
+            "-vf \"format=yuv420p,scale='min(1920,iw*min(1920/iw\\,1080/ih))':'min(1080,ih*min(1920/iw\\,1080/ih))':force_original_aspect_ratio=decrease,pad=1920:1080:(1920-iw)/2:(1080-ih)/2\" "
+            "-c:v libx264 -r 30 -pix_fmt yuv420p output.mp4"
         )
 
         # Load configuration
@@ -490,36 +492,69 @@ class SlideshowManager(QMainWindow):
 
         try:
             self.log_event(f"🎬 Creating slideshow: {output_file.name}")
+            logger.info(f"Starting slideshow creation: {output_file}")
+            logger.info(f"Images: {len(self.images)}, Output: {output_file}")
+
+            # Create temporary directory with symlinks to numbered images
+            temp_dir = Path(".slideshow_temp")
+            temp_dir.mkdir(exist_ok=True)
+            logger.debug(f"Created temp directory: {temp_dir}")
+
+            # Create numbered symlinks with .png extension for FFmpeg image2 demuxer
+            for i, img_path in enumerate(self.images):
+                link_path = temp_dir / f"{i+1:04d}.png"
+                if link_path.exists():
+                    link_path.unlink()
+                link_path.symlink_to(img_path.resolve())
+            logger.debug(f"Created {len(self.images)} symlinks in temp directory")
 
             # Replace output placeholder in command
             cmd = ffmpeg_cmd.replace('output.mp4', str(output_file))
+            # Update input pattern to use temp directory
+            cmd = cmd.replace('%04d.png', f'{temp_dir}/%04d.png')
 
-            # Change to images directory and run FFmpeg
+            logger.debug(f"Running FFmpeg command: {cmd}")
+
+            # Run FFmpeg command
             result = subprocess.run(
                 cmd,
                 shell=True,
-                cwd=str(IMAGES_DIR),
                 capture_output=True,
                 text=True,
                 timeout=300
             )
 
+            # Cleanup temp directory
+            for file in temp_dir.glob("*"):
+                file.unlink()
+            temp_dir.rmdir()
+            logger.debug("Cleaned up temporary directory")
+
             if result.returncode == 0:
-                self.log_event(f"✅ Slideshow created: {output_file.name}")
+                file_size = output_file.stat().st_size / (1024 * 1024)
+                duration = len(self.images) * 5  # 5 seconds per image
+                success_msg = (
+                    f"✅ Slideshow created: {output_file.name}\n"
+                    f"Size: {file_size:.1f} MB | Duration: ~{duration}s"
+                )
+                self.log_event(success_msg)
                 self.show_available_videos()
-                logger.info(f"Slideshow created successfully: {output_file}")
+                logger.info(f"Slideshow created successfully: {output_file} ({file_size:.1f} MB)")
+                QMessageBox.information(self, "Success", success_msg)
             else:
                 error_msg = result.stderr if result.stderr else "Unknown error"
                 self.log_event(f"❌ FFmpeg error: {error_msg[:100]}")
                 logger.error(f"FFmpeg error: {error_msg}")
-                QMessageBox.critical(self, "FFmpeg Error", f"Error creating slideshow:\n{error_msg[:200]}")
+                QMessageBox.critical(self, "FFmpeg Error", f"Error creating slideshow:\n{error_msg[:300]}")
 
         except subprocess.TimeoutExpired:
-            self.log_event("❌ Slideshow creation timed out")
+            self.log_event("❌ Slideshow creation timed out (>300s)")
             logger.error("FFmpeg command timed out")
+            QMessageBox.critical(self, "Error", "Slideshow creation timed out after 300 seconds")
         except Exception as e:
+            error_msg = f"{str(e)}\n\n{traceback.format_exc()}"
             self.log_event(f"❌ Error: {str(e)[:50]}")
-            logger.error(f"Error creating slideshow: {e}")
+            logger.error(f"Error creating slideshow: {error_msg}")
             QMessageBox.critical(self, "Error", f"Error creating slideshow:\n{str(e)}")
     
     def open_videos_folder(self):
