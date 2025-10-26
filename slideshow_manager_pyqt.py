@@ -15,16 +15,17 @@ import threading
 import logging
 import traceback
 from io import StringIO
+import tempfile
 
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QListWidget, QListWidgetItem, QFileDialog,
                              QDialog, QLineEdit, QComboBox, QSpinBox, QCheckBox, QTabWidget,
                              QScrollArea, QGridLayout, QSplitter, QMessageBox, QInputDialog)
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer, QRect
-from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor, QPalette
+from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor, QPalette, QImage
 from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
 
-from PIL import Image, ImageQt
+from PIL import Image
 
 # Configure logging
 logging.basicConfig(
@@ -320,14 +321,18 @@ class SlideshowManager(QMainWindow):
         """Create a thumbnail widget."""
         btn = QPushButton()
         btn.setFixedSize(120, 120)
-        
+
         try:
             img = Image.open(img_path)
             img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
-            qimg = ImageQt.ImageQt(img)
-            pixmap = QPixmap.fromImage(qimg)
-            btn.setIcon(QIcon(pixmap))
-            btn.setIconSize(QSize(120, 120))
+            # Convert PIL image to QPixmap using temporary file
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                img.save(tmp.name)
+                pixmap = QPixmap(tmp.name)
+                btn.setIcon(QIcon(pixmap))
+                btn.setIconSize(QSize(120, 120))
+                os.unlink(tmp.name)
         except Exception as e:
             logger.error(f"Error loading thumbnail: {e}")
         
