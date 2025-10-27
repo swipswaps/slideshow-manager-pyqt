@@ -594,22 +594,43 @@ class SlideshowManager(QMainWindow):
                 # Try system thumbnail provider first (faster)
                 system_thumb = self._get_system_thumbnail(img_path)
                 if system_thumb:
+                    logger.debug(f"Using system thumbnail for video: {img_path.name}")
                     return system_thumb
 
                 # Fallback: Extract first frame from video
+                logger.debug(f"Extracting frame from video: {img_path.name}")
                 if img_path in self.video_frame_cache:
                     frame_path = self.video_frame_cache[img_path]
+                    logger.debug(f"Using cached frame for: {img_path.name}")
                 else:
                     frame_path = self.extract_video_first_frame(img_path)
                     if frame_path:
                         self.video_frame_cache[img_path] = frame_path
+                        logger.debug(f"Extracted frame for: {img_path.name}")
 
                 if frame_path:
+                    # Load directly as QPixmap first (faster, no PIL conversion)
+                    pixmap = QPixmap(frame_path)
+                    if not pixmap.isNull():
+                        pixmap = pixmap.scaledToWidth(120, Qt.SmoothTransformation)
+                        logger.debug(f"Loaded video thumbnail: {img_path.name}")
+                        return pixmap
+
+                    # Fallback to PIL conversion
                     img = Image.open(frame_path)
                     img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
                     return self._pil_to_qpixmap(img)
             else:
-                # Regular image file
+                # Regular image file - try direct QPixmap load first
+                logger.debug(f"Loading image: {img_path.name}")
+                pixmap = QPixmap(str(img_path))
+                if not pixmap.isNull():
+                    pixmap = pixmap.scaledToWidth(120, Qt.SmoothTransformation)
+                    logger.debug(f"Loaded image thumbnail: {img_path.name}")
+                    return pixmap
+
+                # Fallback to PIL conversion
+                logger.debug(f"PIL fallback for: {img_path.name}")
                 img = Image.open(img_path)
                 img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
                 return self._pil_to_qpixmap(img)
@@ -619,25 +640,47 @@ class SlideshowManager(QMainWindow):
         return None
 
     def _get_system_thumbnail(self, file_path):
-        """Try to get thumbnail from system thumbnail cache."""
+        """Try to get thumbnail from system thumbnail cache or tools."""
         try:
-            # Try using ffmpegthumbnailer for videos
+            # Try using ffmpegthumbnailer for videos (fastest)
             if shutil.which('ffmpegthumbnailer'):
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-                    tmp_path = tmp.name
+                try:
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                        tmp_path = tmp.name
 
-                cmd = ['ffmpegthumbnailer', '-i', str(file_path), '-o', tmp_path, '-s', '120']
-                result = subprocess.run(cmd, capture_output=True, timeout=3)
+                    cmd = ['ffmpegthumbnailer', '-i', str(file_path), '-o', tmp_path, '-s', '120']
+                    result = subprocess.run(cmd, capture_output=True, timeout=3)
 
-                if result.returncode == 0 and Path(tmp_path).exists():
-                    pixmap = QPixmap(tmp_path)
-                    if not pixmap.isNull():
+                    if result.returncode == 0 and Path(tmp_path).exists():
+                        pixmap = QPixmap(tmp_path)
+                        if not pixmap.isNull():
+                            Path(tmp_path).unlink()
+                            logger.debug(f"Got thumbnail from ffmpegthumbnailer: {file_path.name}")
+                            return pixmap
                         Path(tmp_path).unlink()
-                        logger.debug(f"Got thumbnail from ffmpegthumbnailer: {file_path.name}")
-                        return pixmap
-                    Path(tmp_path).unlink()
+                except Exception as e:
+                    logger.debug(f"ffmpegthumbnailer failed: {e}")
+
+            # Try using thumbnailer (freedesktop.org standard)
+            if shutil.which('thumbnailer'):
+                try:
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                        tmp_path = tmp.name
+
+                    cmd = ['thumbnailer', str(file_path), tmp_path]
+                    result = subprocess.run(cmd, capture_output=True, timeout=3)
+
+                    if result.returncode == 0 and Path(tmp_path).exists():
+                        pixmap = QPixmap(tmp_path)
+                        if not pixmap.isNull():
+                            Path(tmp_path).unlink()
+                            logger.debug(f"Got thumbnail from thumbnailer: {file_path.name}")
+                            return pixmap
+                        Path(tmp_path).unlink()
+                except Exception as e:
+                    logger.debug(f"thumbnailer failed: {e}")
         except Exception as e:
-            logger.debug(f"ffmpegthumbnailer failed: {e}")
+            logger.debug(f"System thumbnail provider failed: {e}")
 
         return None
 
