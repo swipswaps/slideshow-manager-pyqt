@@ -93,6 +93,9 @@ class SlideshowManager(QMainWindow):
         # Performance optimization: thumbnail cache
         self.thumbnail_cache = {}  # {path: QPixmap}
         self.video_frame_cache = {}  # {path: frame_path}
+        self.thumbnail_buttons = {}  # {index: button}
+        self.thumbnail_loader_thread = None
+        self.stop_loading = False
 
         # Default FFmpeg command (uses image2 demuxer with numbered files)
         # Includes padding to handle odd dimensions and scaling to 1920x1080
@@ -347,22 +350,24 @@ class SlideshowManager(QMainWindow):
         logger.info(f"Available players: {self.video_players}")
 
     def extract_video_first_frame(self, video_path):
-        """Extract first frame from video file using FFmpeg."""
+        """Extract first frame from video file using FFmpeg (optimized for speed)."""
         try:
             # Create temporary PNG file for the frame
             with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
                 tmp_path = tmp.name
 
-            # Use FFmpeg to extract first frame
+            # Use FFmpeg to extract first frame - optimized for speed
+            # -ss 0 seeks to start, -vframes 1 gets only 1 frame, -q:v 5 is faster than 2
             cmd = [
                 'ffmpeg', '-y', '-loglevel', 'error',
+                '-ss', '0',
                 '-i', str(video_path),
-                '-vf', 'select=eq(n\\,0)',
-                '-q:v', '2',
+                '-vframes', '1',
+                '-q:v', '5',
                 tmp_path
             ]
 
-            result = subprocess.run(cmd, capture_output=True, timeout=10)
+            result = subprocess.run(cmd, capture_output=True, timeout=5)
 
             if result.returncode == 0 and Path(tmp_path).exists():
                 return tmp_path
@@ -395,91 +400,120 @@ class SlideshowManager(QMainWindow):
             self.log_event(f"Error loading images: {e}")
     
     def update_thumbnails(self):
-        """Update thumbnail grid."""
+        """Update thumbnail grid with lazy loading."""
         # Clear existing thumbnails
         while self.thumbnails_layout.count():
             self.thumbnails_layout.takeAt(0).widget().deleteLater()
+
+        self.thumbnail_buttons = {}
+        self.stop_loading = False
 
         # Initialize selected images set if not exists
         if not hasattr(self, 'selected_images'):
             self.selected_images = set(range(len(self.images)))
 
-        # Add thumbnails in grid with checkboxes
+        # Create placeholder buttons immediately (fast)
         for i, img_path in enumerate(self.images):
             try:
-                thumb_widget = self.create_thumbnail_with_checkbox(i, img_path)
-                self.thumbnails_layout.addWidget(thumb_widget, i // 6, i % 6)
+                btn = self._create_placeholder_thumbnail(i, img_path)
+                self.thumbnail_buttons[i] = btn
+                self.thumbnails_layout.addWidget(btn, i // 6, i % 6)
             except Exception as e:
-                logger.error(f"Error creating thumbnail for {img_path}: {e}")
+                logger.error(f"Error creating placeholder for {img_path}: {e}")
 
-    def create_thumbnail_with_checkbox(self, index, img_path):
-        """Create a thumbnail widget with colored border to indicate selection."""
+        # Start background thread to load thumbnails
+        self.stop_loading = False
+        self.thumbnail_loader_thread = threading.Thread(target=self._load_thumbnails_background, daemon=True)
+        self.thumbnail_loader_thread.start()
+
+    def _create_placeholder_thumbnail(self, index, img_path):
+        """Create a fast placeholder thumbnail."""
         btn = QPushButton()
         btn.setFixedSize(130, 130)
         btn.setCursor(Qt.PointingHandCursor)
         btn.setFlat(True)
-
-        # Store index for click handling
         btn.index = index
         btn.img_path = img_path
         btn.clicked.connect(lambda: self.toggle_image_selection(index, None))
 
-        try:
-            # Use cached thumbnail if available
-            if img_path in self.thumbnail_cache:
-                pixmap = self.thumbnail_cache[img_path]
-            else:
-                # Check if it's a video file
-                if img_path.suffix.lower() in VIDEO_FORMATS:
-                    # Extract first frame from video (with caching)
-                    if img_path in self.video_frame_cache:
-                        frame_path = self.video_frame_cache[img_path]
-                    else:
-                        frame_path = self.extract_video_first_frame(img_path)
-                        if frame_path:
-                            self.video_frame_cache[img_path] = frame_path
+        # Set placeholder text
+        is_video = img_path.suffix.lower() in VIDEO_FORMATS
+        btn.setText("📹" if is_video else "🖼️")
 
-                    if frame_path:
-                        img = Image.open(frame_path)
-                        img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
-                        pixmap = self._pil_to_qpixmap(img)
-                    else:
-                        btn.setText("📹")
-                        pixmap = None
-                else:
-                    # Regular image file
-                    img = Image.open(img_path)
-                    img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
-                    pixmap = self._pil_to_qpixmap(img)
-
-                if pixmap:
-                    self.thumbnail_cache[img_path] = pixmap
-
-            if pixmap:
-                btn.setIcon(QIcon(pixmap))
-                btn.setIconSize(QSize(120, 120))
-        except Exception as e:
-            logger.error(f"Error loading thumbnail: {e}")
-
-        # Update border color based on selection state
+        # Update border
         self._update_thumbnail_border(btn, index)
 
-        # Get file details for tooltip
+        # Set tooltip
         try:
-            file_size = img_path.stat().st_size / 1024  # KB
+            file_size = img_path.stat().st_size / 1024
             file_name = img_path.name
-            is_video = img_path.suffix.lower() in VIDEO_FORMATS
             file_type = "Video" if is_video else "Image"
             tooltip_text = f"{file_name}\n{file_type} | Size: {file_size:.1f} KB"
             btn.setToolTip(tooltip_text)
-        except Exception as e:
-            logger.error(f"Error getting file details: {e}")
+        except:
+            pass
 
         return btn
+
+    def _load_thumbnails_background(self):
+        """Load thumbnails in background thread."""
+        for i, img_path in enumerate(self.images):
+            if self.stop_loading:
+                break
+
+            try:
+                # Skip if already cached
+                if img_path in self.thumbnail_cache:
+                    pixmap = self.thumbnail_cache[img_path]
+                else:
+                    pixmap = self._load_single_thumbnail(img_path)
+                    if pixmap:
+                        self.thumbnail_cache[img_path] = pixmap
+
+                # Update button on main thread
+                if i in self.thumbnail_buttons and pixmap:
+                    btn = self.thumbnail_buttons[i]
+                    btn.setIcon(QIcon(pixmap))
+                    btn.setIconSize(QSize(120, 120))
+                    btn.setText("")  # Clear placeholder text
+            except Exception as e:
+                logger.error(f"Error loading thumbnail {i}: {e}")
+
+    def _load_single_thumbnail(self, img_path):
+        """Load a single thumbnail (can be called from background thread)."""
+        try:
+            if img_path.suffix.lower() in VIDEO_FORMATS:
+                # Extract first frame from video
+                if img_path in self.video_frame_cache:
+                    frame_path = self.video_frame_cache[img_path]
+                else:
+                    frame_path = self.extract_video_first_frame(img_path)
+                    if frame_path:
+                        self.video_frame_cache[img_path] = frame_path
+
+                if frame_path:
+                    img = Image.open(frame_path)
+                    img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+                    return self._pil_to_qpixmap(img)
+            else:
+                # Regular image file
+                img = Image.open(img_path)
+                img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+                return self._pil_to_qpixmap(img)
+        except Exception as e:
+            logger.error(f"Error loading thumbnail: {e}")
+
+        return None
+
+
 
     def _pil_to_qpixmap(self, pil_image):
         """Convert PIL image to QPixmap efficiently."""
         try:
+            # Ensure image is in RGB mode
+            if pil_image.mode != 'RGB':
+                pil_image = pil_image.convert('RGB')
+
             # Convert PIL to QImage directly without temp file
             data = pil_image.tobytes("RGB", "RGB")
             qimage = QImage(data, pil_image.width, pil_image.height, QImage.Format_RGB888)
