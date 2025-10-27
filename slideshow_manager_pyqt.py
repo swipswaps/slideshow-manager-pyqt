@@ -30,7 +30,7 @@ from PIL import Image
 
 # Configure logging - output to console for visibility
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
@@ -38,6 +38,9 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Suppress PIL debug logging
+logging.getLogger('PIL').setLevel(logging.WARNING)
 
 # Constants
 IMAGES_DIR = Path.home() / "Pictures" / "Screenshots"
