@@ -45,6 +45,7 @@ OUTPUT_DIR = Path.home() / "Pictures" / "Screenshots"
 CONFIG_FILE = Path.home() / ".slideshow_config.json"
 THUMBNAIL_SIZE = (120, 120)
 SUPPORTED_FORMATS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')
+VIDEO_FORMATS = ('.mp4', '.avi', '.mov', '.mkv')
 
 class RoundedButton(QPushButton):
     """Custom button with rounded corners and modern styling."""
@@ -341,21 +342,51 @@ class SlideshowManager(QMainWindow):
         players = ['vlc', 'mpv', 'celluloid', 'shotcut', 'ffplay', 'totem']
         self.video_players = [p for p in players if shutil.which(p)]
         logger.info(f"Available players: {self.video_players}")
+
+    def extract_video_first_frame(self, video_path):
+        """Extract first frame from video file using FFmpeg."""
+        try:
+            # Create temporary PNG file for the frame
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                tmp_path = tmp.name
+
+            # Use FFmpeg to extract first frame
+            cmd = [
+                'ffmpeg', '-y', '-loglevel', 'error',
+                '-i', str(video_path),
+                '-vf', 'select=eq(n\\,0)',
+                '-q:v', '2',
+                tmp_path
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, timeout=10)
+
+            if result.returncode == 0 and Path(tmp_path).exists():
+                return tmp_path
+            else:
+                logger.error(f"Failed to extract frame from {video_path}")
+                return None
+        except Exception as e:
+            logger.error(f"Error extracting video frame: {e}")
+            return None
     
     def load_images(self):
-        """Load images from directory."""
+        """Load images and videos from directory."""
         try:
             if not IMAGES_DIR.exists():
                 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-            
-            self.images = sorted([
+
+            # Load both images and videos
+            all_files = sorted([
                 f for f in IMAGES_DIR.glob('*')
-                if f.suffix.lower() in SUPPORTED_FORMATS
+                if f.suffix.lower() in SUPPORTED_FORMATS or f.suffix.lower() in VIDEO_FORMATS
             ])
-            
+
+            self.images = all_files
+
             self.update_thumbnails()
             self.update_statistics()
-            logger.info(f"Loaded {len(self.images)} images")
+            logger.info(f"Loaded {len(self.images)} items (images and videos)")
         except Exception as e:
             logger.error(f"Error loading images: {e}")
             self.log_event(f"Error loading images: {e}")
@@ -393,15 +424,33 @@ class SlideshowManager(QMainWindow):
         btn.setFixedSize(120, 120)
 
         try:
-            img = Image.open(img_path)
-            img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
-            # Convert PIL image to QPixmap using temporary file
-            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-                img.save(tmp.name)
-                pixmap = QPixmap(tmp.name)
-                btn.setIcon(QIcon(pixmap))
-                btn.setIconSize(QSize(120, 120))
-                os.unlink(tmp.name)
+            # Check if it's a video file
+            if img_path.suffix.lower() in VIDEO_FORMATS:
+                # Extract first frame from video
+                frame_path = self.extract_video_first_frame(img_path)
+                if frame_path:
+                    img = Image.open(frame_path)
+                    img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                        img.save(tmp.name)
+                        pixmap = QPixmap(tmp.name)
+                        btn.setIcon(QIcon(pixmap))
+                        btn.setIconSize(QSize(120, 120))
+                        os.unlink(tmp.name)
+                    os.unlink(frame_path)
+                else:
+                    btn.setText("📹\nNo Frame")
+            else:
+                # Regular image file
+                img = Image.open(img_path)
+                img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+                # Convert PIL image to QPixmap using temporary file
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    img.save(tmp.name)
+                    pixmap = QPixmap(tmp.name)
+                    btn.setIcon(QIcon(pixmap))
+                    btn.setIconSize(QSize(120, 120))
+                    os.unlink(tmp.name)
         except Exception as e:
             logger.error(f"Error loading thumbnail: {e}")
 
@@ -416,14 +465,16 @@ class SlideshowManager(QMainWindow):
             }
         """)
 
-        # Get image details for tooltip
+        # Get file details for tooltip
         try:
             file_size = img_path.stat().st_size / 1024  # KB
             file_name = img_path.name
-            tooltip_text = f"{file_name}\nSize: {file_size:.1f} KB"
+            is_video = img_path.suffix.lower() in VIDEO_FORMATS
+            file_type = "Video" if is_video else "Image"
+            tooltip_text = f"{file_name}\n{file_type} | Size: {file_size:.1f} KB"
             btn.setToolTip(tooltip_text)
         except Exception as e:
-            logger.error(f"Error getting image details: {e}")
+            logger.error(f"Error getting file details: {e}")
 
         main_layout.addWidget(btn)
 
@@ -590,10 +641,10 @@ class SlideshowManager(QMainWindow):
         try:
             # Get selected images in order
             selected_indices = sorted(self.selected_images)
-            selected_images = [self.images[i] for i in selected_indices]
+            selected_items = [self.images[i] for i in selected_indices]
 
             self.log_event(f"🎬 Creating slideshow: {output_file.name}")
-            self.log_event(f"📊 Processing {len(selected_images)} selected images...")
+            self.log_event(f"📊 Processing {len(selected_items)} selected items...")
 
             # Create temporary directory with symlinks to numbered images
             temp_dir = Path(".slideshow_temp")
@@ -601,12 +652,27 @@ class SlideshowManager(QMainWindow):
             self.log_event(f"📁 Created temp directory")
 
             # Create numbered symlinks with .png extension for FFmpeg image2 demuxer
-            for i, img_path in enumerate(selected_images):
+            # For videos, extract first frame; for images, create symlink
+            item_count = 0
+            for i, item_path in enumerate(selected_items):
                 link_path = temp_dir / f"{i+1:04d}.png"
                 if link_path.exists():
                     link_path.unlink()
-                link_path.symlink_to(img_path.resolve())
-            self.log_event(f"🔗 Created {len(selected_images)} symlinks")
+
+                if item_path.suffix.lower() in VIDEO_FORMATS:
+                    # Extract first frame from video
+                    frame_path = self.extract_video_first_frame(item_path)
+                    if frame_path:
+                        link_path.symlink_to(Path(frame_path).resolve())
+                        item_count += 1
+                    else:
+                        self.log_event(f"⚠️ Failed to extract frame from {item_path.name}")
+                else:
+                    # Regular image file
+                    link_path.symlink_to(item_path.resolve())
+                    item_count += 1
+
+            self.log_event(f"🔗 Created {item_count} symlinks")
 
             # Replace output placeholder in command
             cmd = ffmpeg_cmd.replace('output.mp4', str(output_file))

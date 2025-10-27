@@ -6,6 +6,8 @@ Allows users to create, edit, and preview slideshow configurations in JSON forma
 
 import json
 import sys
+import os
+import subprocess
 from pathlib import Path
 from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -63,7 +65,11 @@ class SlideshowJsonEditor(QMainWindow):
         btn_validate = QPushButton("✓ Validate")
         btn_validate.clicked.connect(self.validate_json)
         btn_layout.addWidget(btn_validate)
-        
+
+        btn_export = QPushButton("📤 Export Preview Script")
+        btn_export.clicked.connect(self.export_preview_script)
+        btn_layout.addWidget(btn_export)
+
         left_layout.addLayout(btn_layout)
         
         # Right panel: Preview
@@ -185,26 +191,68 @@ class SlideshowJsonEditor(QMainWindow):
         self.show_preview_image()
     
     def show_preview_image(self):
-        """Show current preview image."""
+        """Show current preview image or video frame."""
         images = self.current_config.get("images", [])
         if not images or self.current_preview_index >= len(images):
             return
-        
-        img_path = images[self.current_preview_index]
+
+        item_path = images[self.current_preview_index]
         try:
-            img = Image.open(img_path)
-            img.thumbnail((400, 300), Image.Resampling.LANCZOS)
-            
-            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-                img.save(tmp.name)
-                pixmap = QPixmap(tmp.name)
-                self.preview_label.setPixmap(pixmap)
-                
-            info = f"Image {self.current_preview_index + 1}/{len(images)}: {Path(img_path).name}"
+            # Check if it's a video file
+            video_formats = ('.mp4', '.avi', '.mov', '.mkv')
+            if Path(item_path).suffix.lower() in video_formats:
+                # Extract first frame from video
+                frame_path = self._extract_video_frame(item_path)
+                if frame_path:
+                    img = Image.open(frame_path)
+                    img.thumbnail((400, 300), Image.Resampling.LANCZOS)
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                        img.save(tmp.name)
+                        pixmap = QPixmap(tmp.name)
+                        self.preview_label.setPixmap(pixmap)
+                    os.unlink(frame_path)
+                    info = f"Video {self.current_preview_index + 1}/{len(images)}: {Path(item_path).name}"
+                else:
+                    self.preview_label.setText("📹 Could not extract video frame")
+                    info = f"Video {self.current_preview_index + 1}/{len(images)}: {Path(item_path).name}"
+            else:
+                # Regular image file
+                img = Image.open(item_path)
+                img.thumbnail((400, 300), Image.Resampling.LANCZOS)
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    img.save(tmp.name)
+                    pixmap = QPixmap(tmp.name)
+                    self.preview_label.setPixmap(pixmap)
+                info = f"Image {self.current_preview_index + 1}/{len(images)}: {Path(item_path).name}"
+
             self.preview_info.setText(info)
         except Exception as e:
-            self.preview_label.setText(f"Error loading image: {e}")
+            self.preview_label.setText(f"Error loading item: {e}")
     
+    def _extract_video_frame(self, video_path):
+        """Extract first frame from video file using FFmpeg."""
+        try:
+            import subprocess
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                tmp_path = tmp.name
+
+            cmd = [
+                'ffmpeg', '-y', '-loglevel', 'error',
+                '-i', str(video_path),
+                '-vf', 'select=eq(n\\,0)',
+                '-q:v', '2',
+                tmp_path
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, timeout=10)
+
+            if result.returncode == 0 and Path(tmp_path).exists():
+                return tmp_path
+            else:
+                return None
+        except Exception as e:
+            return None
+
     def prev_preview_image(self):
         """Show previous image."""
         if self.current_preview_index > 0:
@@ -226,7 +274,225 @@ class SlideshowJsonEditor(QMainWindow):
     def stop_preview(self):
         """Stop preview slideshow."""
         self.preview_timer.stop()
-    
+
+    def export_preview_script(self):
+        """Export a standalone Python script to preview the slideshow."""
+        try:
+            config = json.loads(self.json_editor.toPlainText())
+
+            # Validate configuration
+            if not config.get("images"):
+                QMessageBox.warning(self, "Warning", "No images in configuration")
+                return
+
+            # Generate preview script
+            script_content = self._generate_preview_script(config)
+
+            # Save script to file
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "Export Preview Script", "preview_slideshow.py", "Python Scripts (*.py)"
+            )
+            if file_path:
+                with open(file_path, 'w') as f:
+                    f.write(script_content)
+                os.chmod(file_path, 0o755)  # Make executable
+                QMessageBox.information(self, "Success", f"Preview script exported to:\n{Path(file_path).name}")
+        except json.JSONDecodeError as e:
+            QMessageBox.critical(self, "Error", f"Invalid JSON: {e}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to export script: {e}")
+
+    def _generate_preview_script(self, config):
+        """Generate a preview script from configuration."""
+        images = config.get("images", [])
+        settings = config.get("settings", {})
+        duration = settings.get("duration_per_image", 5)
+        name = config.get("name", "Slideshow")
+
+        script = '''#!/usr/bin/env python3
+"""
+Auto-generated Slideshow Preview Script
+Created from JSON configuration
+"""
+
+import sys
+import json
+from pathlib import Path
+from datetime import datetime
+from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget, QPushButton, QHBoxLayout
+from PyQt5.QtCore import Qt, QTimer, QSize
+from PyQt5.QtGui import QPixmap, QFont
+from PIL import Image
+import tempfile
+
+class SlideshowPreview(QMainWindow):
+    """Preview player for slideshow configuration."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.images = config.get("images", [])
+        self.settings = config.get("settings", {})
+        self.current_index = 0
+        self.is_playing = False
+
+        self.setWindowTitle(f"Slideshow Preview: {config.get('name', 'Slideshow')}")
+        self.setGeometry(100, 100, 800, 600)
+
+        self.setup_ui()
+        self.load_image()
+
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.next_image)
+
+    def setup_ui(self):
+        """Setup the UI."""
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        layout = QVBoxLayout()
+
+        # Image display
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setStyleSheet("background-color: #1e1e1e;")
+        self.image_label.setMinimumSize(600, 400)
+        layout.addWidget(self.image_label)
+
+        # Info label
+        self.info_label = QLabel()
+        self.info_label.setFont(QFont("Arial", 10))
+        self.info_label.setStyleSheet("color: white; background-color: #2b2b2b; padding: 10px;")
+        layout.addWidget(self.info_label)
+
+        # Controls
+        btn_layout = QHBoxLayout()
+
+        btn_prev = QPushButton("⬅️ Previous")
+        btn_prev.clicked.connect(self.prev_image)
+        btn_layout.addWidget(btn_prev)
+
+        self.btn_play = QPushButton("▶️ Play")
+        self.btn_play.clicked.connect(self.toggle_play)
+        btn_layout.addWidget(self.btn_play)
+
+        btn_next = QPushButton("Next ➡️")
+        btn_next.clicked.connect(self.next_image)
+        btn_layout.addWidget(btn_next)
+
+        layout.addLayout(btn_layout)
+
+        central_widget.setLayout(layout)
+        self.apply_dark_theme()
+
+    def apply_dark_theme(self):
+        """Apply dark theme."""
+        self.setStyleSheet("""
+            QMainWindow, QWidget {
+                background-color: #2b2b2b;
+                color: white;
+            }
+            QPushButton {
+                background-color: #3d3d3d;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #404040;
+            }
+        """)
+
+    def load_image(self):
+        """Load and display current image."""
+        if not self.images or self.current_index >= len(self.images):
+            return
+
+        img_path = self.images[self.current_index]
+        try:
+            img = Image.open(img_path)
+            img.thumbnail((600, 400), Image.Resampling.LANCZOS)
+
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                img.save(tmp.name)
+                pixmap = QPixmap(tmp.name)
+                self.image_label.setPixmap(pixmap)
+
+            duration = self.settings.get("duration_per_image", 5)
+            total_duration = len(self.images) * duration
+            info = f"Image {self.current_index + 1}/{len(self.images)} | Duration: {duration}s | Total: ~{total_duration}s"
+            self.info_label.setText(info)
+        except Exception as e:
+            self.image_label.setText(f"Error loading image: {e}")
+
+    def prev_image(self):
+        """Show previous image."""
+        if self.current_index > 0:
+            self.current_index -= 1
+            self.load_image()
+
+    def next_image(self):
+        """Show next image."""
+        if self.current_index < len(self.images) - 1:
+            self.current_index += 1
+            self.load_image()
+        else:
+            self.stop_play()
+
+    def toggle_play(self):
+        """Toggle play/pause."""
+        if self.is_playing:
+            self.stop_play()
+        else:
+            self.start_play()
+
+    def start_play(self):
+        """Start playing slideshow."""
+        self.is_playing = True
+        self.btn_play.setText("⏹️ Stop")
+        duration = self.settings.get("duration_per_image", 5)
+        self.timer.start(duration * 1000)
+
+    def stop_play(self):
+        """Stop playing slideshow."""
+        self.is_playing = False
+        self.btn_play.setText("▶️ Play")
+        self.timer.stop()
+
+def main():
+    app = QApplication(sys.argv)
+
+    config = {
+        "name": "''' + name + '''",
+        "images": [
+'''
+
+        # Add images to script
+        for img in images:
+            script += f'            "{img}",\n'
+
+        script += '''        ],
+        "settings": {
+            "duration_per_image": ''' + str(duration) + ''',
+            "transition": "''' + settings.get("transition", "fade") + '''",
+            "resolution": "''' + settings.get("resolution", "1920x1080") + '''",
+            "framerate": ''' + str(settings.get("framerate", 30)) + ''',
+            "codec": "''' + settings.get("codec", "libx264") + '''"
+        }
+    }
+
+    preview = SlideshowPreview(config)
+    preview.show()
+    sys.exit(app.exec_())
+
+if __name__ == '__main__':
+    main()
+'''
+
+        return script
+
     def apply_dark_theme(self):
         """Apply dark theme."""
         self.setStyleSheet("""
