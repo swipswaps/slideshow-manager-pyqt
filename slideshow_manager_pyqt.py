@@ -498,10 +498,20 @@ class SlideshowManager(QMainWindow):
             if pil_image.mode != 'RGB':
                 pil_image = pil_image.convert('RGB')
 
-            # Convert PIL to QImage directly without temp file
-            data = pil_image.tobytes("RGB", "RGB")
-            qimage = QImage(data, pil_image.width, pil_image.height, QImage.Format_RGB888)
-            return QPixmap.fromImage(qimage)
+            # Use PIL's built-in toqimage method if available, otherwise use temp file
+            try:
+                # Try direct conversion using PIL's internal method
+                from PIL.ImageQt import ImageQt
+                qimage = ImageQt(pil_image)
+                return QPixmap.fromImage(qimage)
+            except:
+                # Fallback: save to temp file and load
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    tmp_path = tmp.name
+                pil_image.save(tmp_path, 'PNG')
+                pixmap = QPixmap(tmp_path)
+                Path(tmp_path).unlink()  # Delete temp file
+                return pixmap
         except Exception as e:
             logger.error(f"Error converting PIL to QPixmap: {e}")
             return None
