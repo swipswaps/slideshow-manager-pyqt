@@ -50,6 +50,68 @@ THUMBNAIL_SIZE = (120, 120)
 SUPPORTED_FORMATS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')
 VIDEO_FORMATS = ('.mp4', '.avi', '.mov', '.mkv')
 
+# Dependency management
+def ensure_dependencies():
+    """Ensure required system dependencies are available."""
+    logger.info("Checking system dependencies...")
+
+    # Check for ffmpeg
+    if not shutil.which('ffmpeg'):
+        logger.error("❌ FFmpeg is not installed. Please install it:")
+        logger.error("   Ubuntu/Debian: sudo apt-get install ffmpeg")
+        logger.error("   Fedora: sudo dnf install ffmpeg")
+        logger.error("   macOS: brew install ffmpeg")
+        return False
+    else:
+        logger.info("✅ FFmpeg found")
+
+    # Try to ensure ffmpegthumbnailer is available
+    if not shutil.which('ffmpegthumbnailer'):
+        logger.info("⚠️  ffmpegthumbnailer not found, attempting to install...")
+        if _install_ffmpegthumbnailer():
+            logger.info("✅ ffmpegthumbnailer installed successfully")
+        else:
+            logger.warning("⚠️  ffmpegthumbnailer not available, will use FFmpeg for thumbnails")
+    else:
+        logger.info("✅ ffmpegthumbnailer found")
+
+    return True
+
+def _install_ffmpegthumbnailer():
+    """Attempt to install ffmpegthumbnailer using system package manager."""
+    try:
+        # Detect package manager
+        if shutil.which('apt-get'):
+            logger.info("Detected apt-get, installing ffmpegthumbnailer...")
+            result = subprocess.run(
+                ['sudo', 'apt-get', 'install', '-y', 'ffmpegthumbnailer'],
+                capture_output=True,
+                timeout=60
+            )
+            return result.returncode == 0
+        elif shutil.which('dnf'):
+            logger.info("Detected dnf, installing ffmpegthumbnailer...")
+            result = subprocess.run(
+                ['sudo', 'dnf', 'install', '-y', 'ffmpegthumbnailer'],
+                capture_output=True,
+                timeout=60
+            )
+            return result.returncode == 0
+        elif shutil.which('brew'):
+            logger.info("Detected brew, installing ffmpegthumbnailer...")
+            result = subprocess.run(
+                ['brew', 'install', 'ffmpegthumbnailer'],
+                capture_output=True,
+                timeout=60
+            )
+            return result.returncode == 0
+        else:
+            logger.warning("Could not detect package manager for automatic installation")
+            return False
+    except Exception as e:
+        logger.warning(f"Failed to install ffmpegthumbnailer: {e}")
+        return False
+
 class RoundedButton(QPushButton):
     """Custom button with rounded corners and modern styling."""
     def __init__(self, text="", parent=None):
@@ -915,6 +977,11 @@ class SlideshowManager(QMainWindow):
         logger.info(message)
 
 def main():
+    # Ensure dependencies are available
+    if not ensure_dependencies():
+        logger.error("❌ Required dependencies not available. Exiting.")
+        sys.exit(1)
+
     app = QApplication(sys.argv)
     window = SlideshowManager()
     window.show()
