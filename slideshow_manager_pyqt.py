@@ -404,18 +404,25 @@ class SlideshowManager(QMainWindow):
         if not hasattr(self, 'selected_images'):
             self.selected_images = set(range(len(self.images)))
 
-        # Create placeholder buttons immediately (fast)
+        # Create placeholder buttons and load PNG thumbnails immediately (fast)
         for i, img_path in enumerate(self.images):
             try:
                 btn = self._create_placeholder_thumbnail(i, img_path)
                 self.thumbnail_buttons[i] = btn
                 self.thumbnails_layout.addWidget(btn, i // 6, i % 6)
+
+                # Load PNG/JPG thumbnails immediately on main thread (they're fast)
+                if img_path.suffix.lower() in SUPPORTED_FORMATS:
+                    pixmap = self._load_single_thumbnail(img_path)
+                    if pixmap:
+                        self.thumbnail_cache[img_path] = pixmap
+                        self._update_thumbnail_ui(btn, pixmap)
             except Exception as e:
                 logger.error(f"Error creating placeholder for {img_path}: {e}")
 
-        # Start background thread to load thumbnails
+        # Start background thread to load VIDEO thumbnails only
         self.stop_loading = False
-        self.thumbnail_loader_thread = threading.Thread(target=self._load_thumbnails_background, daemon=True)
+        self.thumbnail_loader_thread = threading.Thread(target=self._load_video_thumbnails_background, daemon=True)
         self.thumbnail_loader_thread.start()
 
     def _create_placeholder_thumbnail(self, index, img_path):
@@ -447,11 +454,15 @@ class SlideshowManager(QMainWindow):
 
         return btn
 
-    def _load_thumbnails_background(self):
-        """Load thumbnails in background thread."""
+    def _load_video_thumbnails_background(self):
+        """Load VIDEO thumbnails in background thread (PNG/JPG are loaded on main thread)."""
         for i, img_path in enumerate(self.images):
             if self.stop_loading:
                 break
+
+            # Only process videos in background thread
+            if img_path.suffix.lower() not in VIDEO_FORMATS:
+                continue
 
             try:
                 # Skip if already cached
@@ -467,7 +478,7 @@ class SlideshowManager(QMainWindow):
                     btn = self.thumbnail_buttons[i]
                     QTimer.singleShot(0, lambda b=btn, p=pixmap: self._update_thumbnail_ui(b, p))
             except Exception as e:
-                logger.error(f"Error loading thumbnail {i}: {e}")
+                logger.error(f"Error loading video thumbnail {i}: {e}")
 
     def _update_thumbnail_ui(self, btn, pixmap):
         """Update thumbnail UI on main thread."""
