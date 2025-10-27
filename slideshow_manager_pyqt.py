@@ -344,15 +344,30 @@ class SlideshowManager(QMainWindow):
                 tmp_path
             ]
 
-            result = subprocess.run(cmd, capture_output=True, timeout=5)
+            try:
+                result = subprocess.run(cmd, capture_output=True, timeout=30)
+            except subprocess.TimeoutExpired:
+                logger.warning(f"FFmpeg timeout extracting frame from {video_path.name}, trying with longer timeout")
+                # Try again with longer timeout
+                result = subprocess.run(cmd, capture_output=True, timeout=60)
 
             if result.returncode == 0 and Path(tmp_path).exists():
+                logger.debug(f"Successfully extracted frame from {video_path.name}")
                 return tmp_path
             else:
                 logger.error(f"Failed to extract frame from {video_path}")
+                if Path(tmp_path).exists():
+                    Path(tmp_path).unlink()
                 return None
+        except subprocess.TimeoutExpired:
+            logger.error(f"FFmpeg timeout extracting frame from {video_path.name} (>60s)")
+            if Path(tmp_path).exists():
+                Path(tmp_path).unlink()
+            return None
         except Exception as e:
-            logger.error(f"Error extracting video frame: {e}")
+            logger.error(f"Error extracting video frame: {e}", exc_info=True)
+            if Path(tmp_path).exists():
+                Path(tmp_path).unlink()
             return None
     
     def load_images(self):
@@ -470,25 +485,41 @@ class SlideshowManager(QMainWindow):
         """Load a single thumbnail (can be called from background thread)."""
         try:
             if img_path.suffix.lower() in VIDEO_FORMATS:
+                logger.debug(f"Loading video thumbnail: {img_path.name}")
                 # Extract first frame from video
                 if img_path in self.video_frame_cache:
                     frame_path = self.video_frame_cache[img_path]
+                    logger.debug(f"Using cached frame for {img_path.name}")
                 else:
+                    logger.debug(f"Extracting frame from {img_path.name}")
                     frame_path = self.extract_video_first_frame(img_path)
                     if frame_path:
                         self.video_frame_cache[img_path] = frame_path
+                        logger.debug(f"Cached frame for {img_path.name}")
+                    else:
+                        logger.warning(f"Failed to extract frame from {img_path.name}")
 
                 if frame_path:
+                    logger.debug(f"Opening frame file: {frame_path}")
                     img = Image.open(frame_path)
                     img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
-                    return self._pil_to_qpixmap(img)
+                    pixmap = self._pil_to_qpixmap(img)
+                    if pixmap:
+                        logger.debug(f"Successfully created pixmap for {img_path.name}")
+                    return pixmap
+                else:
+                    logger.warning(f"No frame path for {img_path.name}")
             else:
                 # Regular image file
+                logger.debug(f"Loading image thumbnail: {img_path.name}")
                 img = Image.open(img_path)
                 img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
-                return self._pil_to_qpixmap(img)
+                pixmap = self._pil_to_qpixmap(img)
+                if pixmap:
+                    logger.debug(f"Successfully created pixmap for {img_path.name}")
+                return pixmap
         except Exception as e:
-            logger.error(f"Error loading thumbnail: {e}")
+            logger.error(f"Error loading thumbnail for {img_path.name}: {e}", exc_info=True)
 
         return None
 
