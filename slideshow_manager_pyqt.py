@@ -109,62 +109,62 @@ class SlideshowManager(QMainWindow):
         """Setup the main UI."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
+
         main_layout = QVBoxLayout()
         central_widget.setLayout(main_layout)
-        
+
         # Control panel
         control_layout = QHBoxLayout()
-        
+
         btn_add = RoundedButton("➕ Add Images")
         btn_add.clicked.connect(self.add_images)
         control_layout.addWidget(btn_add)
-        
+
         btn_refresh = RoundedButton("🔄 Refresh")
         btn_refresh.clicked.connect(self.load_images)
         control_layout.addWidget(btn_refresh)
-        
+
         btn_create = RoundedButton("🎬 Create Slideshow")
         btn_create.clicked.connect(self.create_slideshow)
         control_layout.addWidget(btn_create)
-        
+
         btn_settings = RoundedButton("⚙️ Settings")
         btn_settings.clicked.connect(self.show_settings)
         control_layout.addWidget(btn_settings)
-        
+
         btn_log = RoundedButton("📋 Event Log")
         btn_log.clicked.connect(self.show_event_log)
         control_layout.addWidget(btn_log)
-        
+
         control_layout.addStretch()
         main_layout.addLayout(control_layout)
-        
+
         # Splitter for resizable sections
         splitter = QSplitter(Qt.Vertical)
 
-        # Video selection panel
-        video_panel = self.create_video_panel()
-        splitter.addWidget(video_panel)
-
-        # FFmpeg command panel
-        ffmpeg_panel = self.create_ffmpeg_panel()
-        splitter.addWidget(ffmpeg_panel)
-
-        # Thumbnails panel with statistics
+        # Thumbnails panel with statistics (FIRST)
         thumbnails_panel = self.create_thumbnails_panel()
         splitter.addWidget(thumbnails_panel)
 
-        # Event log panel
+        # FFmpeg command panel (SECOND)
+        ffmpeg_panel = self.create_ffmpeg_panel()
+        splitter.addWidget(ffmpeg_panel)
+
+        # Video selection panel (THIRD)
+        video_panel = self.create_video_panel()
+        splitter.addWidget(video_panel)
+
+        # Event log panel (FOURTH)
         log_panel = self.create_log_panel()
         splitter.addWidget(log_panel)
 
-        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 2)
+        splitter.setStretchFactor(2, 1)
         splitter.setStretchFactor(3, 1)
 
         main_layout.addWidget(splitter)
-        
+
         # Apply dark theme
         self.apply_dark_theme()
     
@@ -499,13 +499,12 @@ class SlideshowManager(QMainWindow):
 
         try:
             self.log_event(f"🎬 Creating slideshow: {output_file.name}")
-            logger.info(f"Starting slideshow creation: {output_file}")
-            logger.info(f"Images: {len(self.images)}, Output: {output_file}")
+            self.log_event(f"📊 Processing {len(self.images)} images...")
 
             # Create temporary directory with symlinks to numbered images
             temp_dir = Path(".slideshow_temp")
             temp_dir.mkdir(exist_ok=True)
-            logger.debug(f"Created temp directory: {temp_dir}")
+            self.log_event(f"📁 Created temp directory")
 
             # Create numbered symlinks with .png extension for FFmpeg image2 demuxer
             for i, img_path in enumerate(self.images):
@@ -513,49 +512,58 @@ class SlideshowManager(QMainWindow):
                 if link_path.exists():
                     link_path.unlink()
                 link_path.symlink_to(img_path.resolve())
-            logger.debug(f"Created {len(self.images)} symlinks in temp directory")
+            self.log_event(f"🔗 Created {len(self.images)} symlinks")
 
             # Replace output placeholder in command
             cmd = ffmpeg_cmd.replace('output.mp4', str(output_file))
             # Update input pattern to use temp directory
             cmd = cmd.replace('%04d.png', f'{temp_dir}/%04d.png')
 
-            logger.debug(f"Running FFmpeg command: {cmd}")
+            self.log_event(f"⚙️ Running FFmpeg command...")
+            logger.debug(f"FFmpeg command: {cmd}")
 
-            # Run FFmpeg command
-            result = subprocess.run(
+            # Run FFmpeg command with real-time output capture
+            process = subprocess.Popen(
                 cmd,
                 shell=True,
-                capture_output=True,
-                text=True,
-                timeout=300
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
             )
+
+            # Wait for process with timeout
+            try:
+                stdout, stderr = process.communicate(timeout=300)
+                result_returncode = process.returncode
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()
+                result_returncode = -1
+                self.log_event("❌ FFmpeg command timed out (>300s)")
+                raise subprocess.TimeoutExpired(cmd, 300)
 
             # Cleanup temp directory
             for file in temp_dir.glob("*"):
                 file.unlink()
             temp_dir.rmdir()
-            logger.debug("Cleaned up temporary directory")
+            self.log_event(f"🧹 Cleaned up temporary directory")
 
-            if result.returncode == 0:
+            if result_returncode == 0:
                 file_size = output_file.stat().st_size / (1024 * 1024)
                 duration = len(self.images) * 5  # 5 seconds per image
-                success_msg = (
-                    f"✅ Slideshow created: {output_file.name}\n"
-                    f"Size: {file_size:.1f} MB | Duration: ~{duration}s"
-                )
-                self.log_event(success_msg)
+                self.log_event(f"✅ Slideshow created successfully!")
+                self.log_event(f"📦 Size: {file_size:.1f} MB | Duration: ~{duration}s")
                 self.show_available_videos()
                 logger.info(f"Slideshow created successfully: {output_file} ({file_size:.1f} MB)")
-                QMessageBox.information(self, "Success", success_msg)
+                QMessageBox.information(self, "Success",
+                    f"✅ Slideshow created: {output_file.name}\nSize: {file_size:.1f} MB | Duration: ~{duration}s")
             else:
-                error_msg = result.stderr if result.stderr else "Unknown error"
+                error_msg = stderr if stderr else "Unknown error"
                 self.log_event(f"❌ FFmpeg error: {error_msg[:100]}")
                 logger.error(f"FFmpeg error: {error_msg}")
                 QMessageBox.critical(self, "FFmpeg Error", f"Error creating slideshow:\n{error_msg[:300]}")
 
         except subprocess.TimeoutExpired:
-            self.log_event("❌ Slideshow creation timed out (>300s)")
             logger.error("FFmpeg command timed out")
             QMessageBox.critical(self, "Error", "Slideshow creation timed out after 300 seconds")
         except Exception as e:
