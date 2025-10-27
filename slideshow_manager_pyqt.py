@@ -460,6 +460,9 @@ class SlideshowManager(QMainWindow):
             btn.setIcon(QIcon(pixmap))
             btn.setIconSize(QSize(120, 120))
             btn.setText("")  # Clear placeholder text
+            # CRITICAL: Keep a reference to the pixmap to prevent garbage collection
+            # This is the same pattern used in Tkinter (thumb_label.image = thumb)
+            btn._pixmap = pixmap
         except Exception as e:
             logger.error(f"Error updating thumbnail UI: {e}")
 
