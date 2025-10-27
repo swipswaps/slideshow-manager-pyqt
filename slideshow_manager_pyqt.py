@@ -30,7 +30,7 @@ from PIL import Image
 
 # Configure logging - output to console for visibility
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
@@ -39,9 +39,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Suppress PIL debug logging
-logging.getLogger('PIL').setLevel(logging.WARNING)
-
 # Constants
 IMAGES_DIR = Path.home() / "Pictures" / "Screenshots"
 OUTPUT_DIR = Path.home() / "Pictures" / "Screenshots"
@@ -49,68 +46,6 @@ CONFIG_FILE = Path.home() / ".slideshow_config.json"
 THUMBNAIL_SIZE = (120, 120)
 SUPPORTED_FORMATS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')
 VIDEO_FORMATS = ('.mp4', '.avi', '.mov', '.mkv')
-
-# Dependency management
-def ensure_dependencies():
-    """Ensure required system dependencies are available."""
-    logger.info("Checking system dependencies...")
-
-    # Check for ffmpeg
-    if not shutil.which('ffmpeg'):
-        logger.error("❌ FFmpeg is not installed. Please install it:")
-        logger.error("   Ubuntu/Debian: sudo apt-get install ffmpeg")
-        logger.error("   Fedora: sudo dnf install ffmpeg")
-        logger.error("   macOS: brew install ffmpeg")
-        return False
-    else:
-        logger.info("✅ FFmpeg found")
-
-    # Try to ensure ffmpegthumbnailer is available
-    if not shutil.which('ffmpegthumbnailer'):
-        logger.info("⚠️  ffmpegthumbnailer not found, attempting to install...")
-        if _install_ffmpegthumbnailer():
-            logger.info("✅ ffmpegthumbnailer installed successfully")
-        else:
-            logger.warning("⚠️  ffmpegthumbnailer not available, will use FFmpeg for thumbnails")
-    else:
-        logger.info("✅ ffmpegthumbnailer found")
-
-    return True
-
-def _install_ffmpegthumbnailer():
-    """Attempt to install ffmpegthumbnailer using system package manager."""
-    try:
-        # Detect package manager
-        if shutil.which('apt-get'):
-            logger.info("Detected apt-get, installing ffmpegthumbnailer...")
-            result = subprocess.run(
-                ['sudo', 'apt-get', 'install', '-y', 'ffmpegthumbnailer'],
-                capture_output=True,
-                timeout=60
-            )
-            return result.returncode == 0
-        elif shutil.which('dnf'):
-            logger.info("Detected dnf, installing ffmpegthumbnailer...")
-            result = subprocess.run(
-                ['sudo', 'dnf', 'install', '-y', 'ffmpegthumbnailer'],
-                capture_output=True,
-                timeout=60
-            )
-            return result.returncode == 0
-        elif shutil.which('brew'):
-            logger.info("Detected brew, installing ffmpegthumbnailer...")
-            result = subprocess.run(
-                ['brew', 'install', 'ffmpegthumbnailer'],
-                capture_output=True,
-                timeout=60
-            )
-            return result.returncode == 0
-        else:
-            logger.warning("Could not detect package manager for automatic installation")
-            return False
-    except Exception as e:
-        logger.warning(f"Failed to install ffmpegthumbnailer: {e}")
-        return False
 
 class RoundedButton(QPushButton):
     """Custom button with rounded corners and modern styling."""
@@ -136,56 +71,6 @@ class RoundedButton(QPushButton):
         """)
         self.setCursor(Qt.PointingHandCursor)
         self.setFlat(False)
-
-class SelectableMessageBox(QDialog):
-    """Custom message box with selectable text for troubleshooting."""
-    def __init__(self, parent, title, message, msg_type="information"):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.setGeometry(200, 200, 600, 300)
-        self.setMinimumWidth(500)
-
-        layout = QVBoxLayout()
-
-        # Add icon and title
-        title_label = QLabel(title)
-        title_font = QFont()
-        title_font.setBold(True)
-        title_font.setPointSize(12)
-        title_label.setFont(title_font)
-        layout.addWidget(title_label)
-
-        # Add selectable text
-        text_edit = QPlainTextEdit()
-        text_edit.setPlainText(message)
-        text_edit.setReadOnly(True)
-        text_edit.setLineWrapMode(QPlainTextEdit.WidgetWidth)
-        layout.addWidget(text_edit)
-
-        # Add close button
-        btn_close = RoundedButton("Close")
-        btn_close.clicked.connect(self.accept)
-        layout.addWidget(btn_close)
-
-        self.setLayout(layout)
-
-    @staticmethod
-    def information(parent, title, message):
-        """Show information dialog."""
-        dialog = SelectableMessageBox(parent, title, message, "information")
-        dialog.exec_()
-
-    @staticmethod
-    def warning(parent, title, message):
-        """Show warning dialog."""
-        dialog = SelectableMessageBox(parent, title, message, "warning")
-        dialog.exec_()
-
-    @staticmethod
-    def critical(parent, title, message):
-        """Show error dialog."""
-        dialog = SelectableMessageBox(parent, title, message, "critical")
-        dialog.exec_()
 
 class SlideshowManager(QMainWindow):
     """Main application window."""
@@ -549,67 +434,28 @@ class SlideshowManager(QMainWindow):
 
     def _load_thumbnails_background(self):
         """Load thumbnails in background thread."""
-        logger.info(f"Starting thumbnail loading for {len(self.images)} items")
         for i, img_path in enumerate(self.images):
             if self.stop_loading:
-                logger.info("Thumbnail loading stopped")
                 break
 
             try:
                 # Skip if already cached
                 if img_path in self.thumbnail_cache:
                     pixmap = self.thumbnail_cache[img_path]
-                    logger.debug(f"Using cached thumbnail for {img_path.name}")
                 else:
-                    logger.debug(f"Loading thumbnail {i+1}/{len(self.images)}: {img_path.name}")
-                    # Load image data in background thread (no QPixmap yet)
-                    image_path = self._load_single_thumbnail_path(img_path)
-                    if image_path:
-                        logger.debug(f"Successfully loaded thumbnail for {img_path.name}")
-                    else:
-                        logger.warning(f"Failed to load thumbnail for {img_path.name}")
-                        image_path = None
+                    pixmap = self._load_single_thumbnail(img_path)
+                    if pixmap:
+                        self.thumbnail_cache[img_path] = pixmap
 
-                # Update button on main thread using QTimer (create QPixmap there)
-                if i in self.thumbnail_buttons and image_path:
+                # Update button on main thread using QTimer
+                if i in self.thumbnail_buttons and pixmap:
                     btn = self.thumbnail_buttons[i]
-                    QTimer.singleShot(0, lambda b=btn, p=image_path, idx=i: self._update_thumbnail_ui_from_path(b, p, idx))
-                elif i in self.thumbnail_buttons and not image_path:
-                    logger.warning(f"No image path for button {i}: {img_path.name}")
+                    QTimer.singleShot(0, lambda b=btn, p=pixmap: self._update_thumbnail_ui(b, p))
             except Exception as e:
-                logger.error(f"Error loading thumbnail {i}: {e}", exc_info=True)
-
-    def _update_thumbnail_ui_from_path(self, btn, image_path, index):
-        """Update thumbnail UI on main thread from image path."""
-        try:
-            if not image_path or not Path(image_path).exists():
-                logger.warning(f"Image path doesn't exist: {image_path}")
-                return
-
-            # Create QPixmap on main thread (required!)
-            pixmap = QPixmap(str(image_path))
-            if pixmap.isNull():
-                logger.warning(f"Failed to create QPixmap from: {image_path}")
-                return
-
-            # Scale to thumbnail size
-            pixmap = pixmap.scaledToWidth(120, Qt.SmoothTransformation)
-
-            # Cache it
-            img_path = self.images[index] if index < len(self.images) else None
-            if img_path:
-                self.thumbnail_cache[img_path] = pixmap
-
-            # Update button
-            btn.setIcon(QIcon(pixmap))
-            btn.setIconSize(QSize(120, 120))
-            btn.setText("")  # Clear placeholder text
-            logger.debug(f"Updated thumbnail UI for button {index}")
-        except Exception as e:
-            logger.error(f"Error updating thumbnail UI: {e}", exc_info=True)
+                logger.error(f"Error loading thumbnail {i}: {e}")
 
     def _update_thumbnail_ui(self, btn, pixmap):
-        """Update thumbnail UI on main thread (legacy)."""
+        """Update thumbnail UI on main thread."""
         try:
             btn.setIcon(QIcon(pixmap))
             btn.setIconSize(QSize(120, 120))
@@ -617,179 +463,29 @@ class SlideshowManager(QMainWindow):
         except Exception as e:
             logger.error(f"Error updating thumbnail UI: {e}")
 
-    def _load_single_thumbnail_path(self, img_path):
-        """Load a single thumbnail and return path (can be called from background thread).
-
-        Returns the path to the thumbnail image file, not a QPixmap.
-        QPixmap creation happens on main thread.
-        """
-        try:
-            if img_path.suffix.lower() in VIDEO_FORMATS:
-                # Try system thumbnail provider first (faster)
-                system_thumb_path = self._get_system_thumbnail_path(img_path)
-                if system_thumb_path:
-                    logger.debug(f"Using system thumbnail for video: {img_path.name}")
-                    return system_thumb_path
-
-                # Fallback: Extract first frame from video
-                logger.debug(f"Extracting frame from video: {img_path.name}")
-                if img_path in self.video_frame_cache:
-                    frame_path = self.video_frame_cache[img_path]
-                    logger.debug(f"Using cached frame for: {img_path.name}")
-                else:
-                    frame_path = self.extract_video_first_frame(img_path)
-                    if frame_path:
-                        self.video_frame_cache[img_path] = frame_path
-                        logger.debug(f"Extracted frame for: {img_path.name}")
-
-                if frame_path and Path(frame_path).exists():
-                    logger.debug(f"Loaded video thumbnail: {img_path.name}")
-                    return frame_path
-            else:
-                # Regular image file - just return the path
-                logger.debug(f"Loading image: {img_path.name}")
-                if img_path.exists():
-                    logger.debug(f"Loaded image thumbnail: {img_path.name}")
-                    return str(img_path)
-        except Exception as e:
-            logger.error(f"Error loading thumbnail for {img_path.name}: {e}", exc_info=True)
-
-        return None
-
     def _load_single_thumbnail(self, img_path):
-        """Load a single thumbnail (legacy - returns QPixmap)."""
+        """Load a single thumbnail (can be called from background thread)."""
         try:
             if img_path.suffix.lower() in VIDEO_FORMATS:
-                # Try system thumbnail provider first (faster)
-                system_thumb = self._get_system_thumbnail(img_path)
-                if system_thumb:
-                    logger.debug(f"Using system thumbnail for video: {img_path.name}")
-                    return system_thumb
-
-                # Fallback: Extract first frame from video
-                logger.debug(f"Extracting frame from video: {img_path.name}")
+                # Extract first frame from video
                 if img_path in self.video_frame_cache:
                     frame_path = self.video_frame_cache[img_path]
-                    logger.debug(f"Using cached frame for: {img_path.name}")
                 else:
                     frame_path = self.extract_video_first_frame(img_path)
                     if frame_path:
                         self.video_frame_cache[img_path] = frame_path
-                        logger.debug(f"Extracted frame for: {img_path.name}")
 
                 if frame_path:
-                    # Load directly as QPixmap first (faster, no PIL conversion)
-                    pixmap = QPixmap(frame_path)
-                    if not pixmap.isNull():
-                        pixmap = pixmap.scaledToWidth(120, Qt.SmoothTransformation)
-                        logger.debug(f"Loaded video thumbnail: {img_path.name}")
-                        return pixmap
-
-                    # Fallback to PIL conversion
                     img = Image.open(frame_path)
                     img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
                     return self._pil_to_qpixmap(img)
             else:
-                # Regular image file - try direct QPixmap load first
-                logger.debug(f"Loading image: {img_path.name}")
-                pixmap = QPixmap(str(img_path))
-                if not pixmap.isNull():
-                    pixmap = pixmap.scaledToWidth(120, Qt.SmoothTransformation)
-                    logger.debug(f"Loaded image thumbnail: {img_path.name}")
-                    return pixmap
-
-                # Fallback to PIL conversion
-                logger.debug(f"PIL fallback for: {img_path.name}")
+                # Regular image file
                 img = Image.open(img_path)
                 img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
                 return self._pil_to_qpixmap(img)
         except Exception as e:
-            logger.error(f"Error loading thumbnail for {img_path.name}: {e}", exc_info=True)
-
-        return None
-
-    def _get_system_thumbnail_path(self, file_path):
-        """Try to get thumbnail path from system thumbnail cache or tools.
-
-        Returns path to thumbnail file, not QPixmap.
-        """
-        try:
-            # Try using ffmpegthumbnailer for videos (fastest)
-            if shutil.which('ffmpegthumbnailer'):
-                try:
-                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-                        tmp_path = tmp.name
-
-                    cmd = ['ffmpegthumbnailer', '-i', str(file_path), '-o', tmp_path, '-s', '120']
-                    result = subprocess.run(cmd, capture_output=True, timeout=3)
-
-                    if result.returncode == 0 and Path(tmp_path).exists():
-                        logger.debug(f"Got thumbnail from ffmpegthumbnailer: {file_path.name}")
-                        return tmp_path
-                except Exception as e:
-                    logger.debug(f"ffmpegthumbnailer failed: {e}")
-
-            # Try using thumbnailer (freedesktop.org standard)
-            if shutil.which('thumbnailer'):
-                try:
-                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-                        tmp_path = tmp.name
-
-                    cmd = ['thumbnailer', str(file_path), tmp_path]
-                    result = subprocess.run(cmd, capture_output=True, timeout=3)
-
-                    if result.returncode == 0 and Path(tmp_path).exists():
-                        logger.debug(f"Got thumbnail from thumbnailer: {file_path.name}")
-                        return tmp_path
-                except Exception as e:
-                    logger.debug(f"thumbnailer failed: {e}")
-        except Exception as e:
-            logger.debug(f"System thumbnail provider failed: {e}")
-
-        return None
-
-    def _get_system_thumbnail(self, file_path):
-        """Try to get thumbnail from system thumbnail cache or tools (legacy - returns QPixmap)."""
-        try:
-            # Try using ffmpegthumbnailer for videos (fastest)
-            if shutil.which('ffmpegthumbnailer'):
-                try:
-                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-                        tmp_path = tmp.name
-
-                    cmd = ['ffmpegthumbnailer', '-i', str(file_path), '-o', tmp_path, '-s', '120']
-                    result = subprocess.run(cmd, capture_output=True, timeout=3)
-
-                    if result.returncode == 0 and Path(tmp_path).exists():
-                        pixmap = QPixmap(tmp_path)
-                        if not pixmap.isNull():
-                            Path(tmp_path).unlink()
-                            logger.debug(f"Got thumbnail from ffmpegthumbnailer: {file_path.name}")
-                            return pixmap
-                        Path(tmp_path).unlink()
-                except Exception as e:
-                    logger.debug(f"ffmpegthumbnailer failed: {e}")
-
-            # Try using thumbnailer (freedesktop.org standard)
-            if shutil.which('thumbnailer'):
-                try:
-                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-                        tmp_path = tmp.name
-
-                    cmd = ['thumbnailer', str(file_path), tmp_path]
-                    result = subprocess.run(cmd, capture_output=True, timeout=3)
-
-                    if result.returncode == 0 and Path(tmp_path).exists():
-                        pixmap = QPixmap(tmp_path)
-                        if not pixmap.isNull():
-                            Path(tmp_path).unlink()
-                            logger.debug(f"Got thumbnail from thumbnailer: {file_path.name}")
-                            return pixmap
-                        Path(tmp_path).unlink()
-                except Exception as e:
-                    logger.debug(f"thumbnailer failed: {e}")
-        except Exception as e:
-            logger.debug(f"System thumbnail provider failed: {e}")
+            logger.error(f"Error loading thumbnail: {e}")
 
         return None
 
@@ -962,13 +658,13 @@ class SlideshowManager(QMainWindow):
         # Check if any images are selected
         if not hasattr(self, 'selected_images') or not self.selected_images:
             self.log_event("❌ No images selected for slideshow")
-            SelectableMessageBox.warning(self, "Warning", "Please select at least one image for the slideshow.")
+            QMessageBox.warning(self, "Warning", "Please select at least one image for the slideshow.")
             return
 
         # Check if FFmpeg is installed
         if not shutil.which('ffmpeg'):
             self.log_event("❌ FFmpeg not installed")
-            SelectableMessageBox.critical(self, "Error", "FFmpeg is not installed. Please install it first.")
+            QMessageBox.critical(self, "Error", "FFmpeg is not installed. Please install it first.")
             return
 
         # Get the FFmpeg command
@@ -1059,27 +755,27 @@ class SlideshowManager(QMainWindow):
 
             if result_returncode == 0:
                 file_size = output_file.stat().st_size / (1024 * 1024)
-                duration = len(selected_items) * 5  # 5 seconds per image
+                duration = len(selected_images) * 5  # 5 seconds per image
                 self.log_event(f"✅ Slideshow created successfully!")
-                self.log_event(f"📦 Size: {file_size:.1f} MB | Duration: ~{duration}s | Images: {len(selected_items)}")
+                self.log_event(f"📦 Size: {file_size:.1f} MB | Duration: ~{duration}s | Images: {len(selected_images)}")
                 self.show_available_videos()
                 logger.info(f"Slideshow created successfully: {output_file} ({file_size:.1f} MB)")
-                SelectableMessageBox.information(self, "Success",
-                    f"✅ Slideshow created: {output_file.name}\nSize: {file_size:.1f} MB | Duration: ~{duration}s | Images: {len(selected_items)}")
+                QMessageBox.information(self, "Success",
+                    f"✅ Slideshow created: {output_file.name}\nSize: {file_size:.1f} MB | Duration: ~{duration}s | Images: {len(selected_images)}")
             else:
                 error_msg = stderr if stderr else "Unknown error"
                 self.log_event(f"❌ FFmpeg error: {error_msg[:100]}")
                 logger.error(f"FFmpeg error: {error_msg}")
-                SelectableMessageBox.critical(self, "FFmpeg Error", f"Error creating slideshow:\n{error_msg}")
+                QMessageBox.critical(self, "FFmpeg Error", f"Error creating slideshow:\n{error_msg[:300]}")
 
         except subprocess.TimeoutExpired:
             logger.error("FFmpeg command timed out")
-            SelectableMessageBox.critical(self, "Error", "Slideshow creation timed out after 300 seconds")
+            QMessageBox.critical(self, "Error", "Slideshow creation timed out after 300 seconds")
         except Exception as e:
             error_msg = f"{str(e)}\n\n{traceback.format_exc()}"
             self.log_event(f"❌ Error: {str(e)[:50]}")
             logger.error(f"Error creating slideshow: {error_msg}")
-            SelectableMessageBox.critical(self, "Error", f"Error creating slideshow:\n{error_msg}")
+            QMessageBox.critical(self, "Error", f"Error creating slideshow:\n{str(e)}")
     
     def open_videos_folder(self):
         """Open videos folder in file manager."""
@@ -1129,11 +825,6 @@ class SlideshowManager(QMainWindow):
         logger.info(message)
 
 def main():
-    # Ensure dependencies are available
-    if not ensure_dependencies():
-        logger.error("❌ Required dependencies not available. Exiting.")
-        sys.exit(1)
-
     app = QApplication(sys.argv)
     window = SlideshowManager()
     window.show()
