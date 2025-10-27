@@ -86,6 +86,9 @@ class SlideshowManager(QMainWindow):
         self.video_players = []
         self.config = {}
         self.log_events = []
+        self.selected_images = set()
+        self.previous_selected_images = set()
+        self.select_all_state = 0  # 0=normal, 1=all selected, 2=none selected
 
         # Default FFmpeg command (uses image2 demuxer with numbered files)
         # Includes padding to handle odd dimensions and scaling to 1920x1080
@@ -233,32 +236,38 @@ class SlideshowManager(QMainWindow):
         """Create thumbnails panel with statistics."""
         panel = QWidget()
         layout = QVBoxLayout()
-        
-        # Header with statistics
+
+        # Header with statistics and Select All button
         header_layout = QHBoxLayout()
         header_label = QLabel("📸 Image Thumbnails")
         header_label.setFont(QFont("Arial", 11, QFont.Bold))
         header_layout.addWidget(header_label)
-        
+
         self.stats_label = QLabel()
         self.stats_label.setFont(QFont("Arial", 9))
         header_layout.addStretch()
         header_layout.addWidget(self.stats_label)
-        
+
+        # Select All button
+        self.btn_select_all = RoundedButton("☑️ Select All")
+        self.btn_select_all.clicked.connect(self.toggle_select_all)
+        self.btn_select_all.setMaximumWidth(120)
+        header_layout.addWidget(self.btn_select_all)
+
         layout.addLayout(header_layout)
-        
+
         # Thumbnails grid
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        
+
         self.thumbnails_widget = QWidget()
         self.thumbnails_layout = QGridLayout()
         self.thumbnails_layout.setSpacing(10)
         self.thumbnails_widget.setLayout(self.thumbnails_layout)
-        
+
         scroll.setWidget(self.thumbnails_widget)
         layout.addWidget(scroll)
-        
+
         panel.setLayout(layout)
         return panel
     
@@ -370,19 +379,16 @@ class SlideshowManager(QMainWindow):
                 logger.error(f"Error creating thumbnail for {img_path}: {e}")
 
     def create_thumbnail_with_checkbox(self, index, img_path):
-        """Create a thumbnail widget with checkbox."""
+        """Create a thumbnail widget with checkbox in lower right corner."""
         container = QWidget()
-        layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        container.setFixedSize(140, 140)
 
-        # Checkbox
-        checkbox = QCheckBox()
-        checkbox.setChecked(index in self.selected_images)
-        checkbox.stateChanged.connect(lambda state: self.toggle_image_selection(index, state))
-        layout.addWidget(checkbox, alignment=Qt.AlignCenter)
+        # Main layout for container
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # Thumbnail button
+        # Thumbnail button (takes most of the space)
         btn = QPushButton()
         btn.setFixedSize(120, 120)
 
@@ -410,8 +416,36 @@ class SlideshowManager(QMainWindow):
             }
         """)
 
-        layout.addWidget(btn)
-        container.setLayout(layout)
+        # Get image details for tooltip
+        try:
+            file_size = img_path.stat().st_size / 1024  # KB
+            file_name = img_path.name
+            tooltip_text = f"{file_name}\nSize: {file_size:.1f} KB"
+            btn.setToolTip(tooltip_text)
+        except Exception as e:
+            logger.error(f"Error getting image details: {e}")
+
+        main_layout.addWidget(btn)
+
+        # Checkbox in lower right corner
+        checkbox_layout = QHBoxLayout()
+        checkbox_layout.setContentsMargins(0, 0, 0, 0)
+        checkbox_layout.setSpacing(0)
+        checkbox_layout.addStretch()
+
+        checkbox = QCheckBox()
+        checkbox.setChecked(index in self.selected_images)
+        checkbox.stateChanged.connect(lambda state: self.toggle_image_selection(index, state))
+        checkbox.setStyleSheet("""
+            QCheckBox {
+                spacing: 0px;
+                margin: 0px;
+            }
+        """)
+        checkbox_layout.addWidget(checkbox)
+
+        main_layout.addLayout(checkbox_layout)
+        container.setLayout(main_layout)
         return container
 
     def toggle_image_selection(self, index, state):
@@ -423,7 +457,29 @@ class SlideshowManager(QMainWindow):
 
         # Update statistics
         self.update_statistics()
-    
+
+    def toggle_select_all(self):
+        """Toggle between select all, select none, and restore previous selection."""
+        total_images = len(self.images)
+
+        if self.select_all_state == 0:  # Normal state -> Select All
+            self.previous_selected_images = self.selected_images.copy()
+            self.selected_images = set(range(total_images))
+            self.select_all_state = 1
+            self.btn_select_all.setText("☐ Select None")
+        elif self.select_all_state == 1:  # All selected -> Select None
+            self.selected_images = set()
+            self.select_all_state = 2
+            self.btn_select_all.setText("↩️ Restore")
+        else:  # None selected -> Restore previous
+            self.selected_images = self.previous_selected_images.copy()
+            self.select_all_state = 0
+            self.btn_select_all.setText("☑️ Select All")
+
+        # Refresh thumbnails to update checkboxes
+        self.update_thumbnails()
+        self.update_statistics()
+
     def update_statistics(self):
         """Update statistics display."""
         total = len(self.images)
