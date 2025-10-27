@@ -75,6 +75,56 @@ class RoundedButton(QPushButton):
         self.setCursor(Qt.PointingHandCursor)
         self.setFlat(False)
 
+class SelectableMessageBox(QDialog):
+    """Custom message box with selectable text for troubleshooting."""
+    def __init__(self, parent, title, message, msg_type="information"):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setGeometry(200, 200, 600, 300)
+        self.setMinimumWidth(500)
+
+        layout = QVBoxLayout()
+
+        # Add icon and title
+        title_label = QLabel(title)
+        title_font = QFont()
+        title_font.setBold(True)
+        title_font.setPointSize(12)
+        title_label.setFont(title_font)
+        layout.addWidget(title_label)
+
+        # Add selectable text
+        text_edit = QPlainTextEdit()
+        text_edit.setPlainText(message)
+        text_edit.setReadOnly(True)
+        text_edit.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        layout.addWidget(text_edit)
+
+        # Add close button
+        btn_close = RoundedButton("Close")
+        btn_close.clicked.connect(self.accept)
+        layout.addWidget(btn_close)
+
+        self.setLayout(layout)
+
+    @staticmethod
+    def information(parent, title, message):
+        """Show information dialog."""
+        dialog = SelectableMessageBox(parent, title, message, "information")
+        dialog.exec_()
+
+    @staticmethod
+    def warning(parent, title, message):
+        """Show warning dialog."""
+        dialog = SelectableMessageBox(parent, title, message, "warning")
+        dialog.exec_()
+
+    @staticmethod
+    def critical(parent, title, message):
+        """Show error dialog."""
+        dialog = SelectableMessageBox(parent, title, message, "critical")
+        dialog.exec_()
+
 class SlideshowManager(QMainWindow):
     """Main application window."""
 
@@ -437,25 +487,34 @@ class SlideshowManager(QMainWindow):
 
     def _load_thumbnails_background(self):
         """Load thumbnails in background thread."""
+        logger.info(f"Starting thumbnail loading for {len(self.images)} items")
         for i, img_path in enumerate(self.images):
             if self.stop_loading:
+                logger.info("Thumbnail loading stopped")
                 break
 
             try:
                 # Skip if already cached
                 if img_path in self.thumbnail_cache:
                     pixmap = self.thumbnail_cache[img_path]
+                    logger.debug(f"Using cached thumbnail for {img_path.name}")
                 else:
+                    logger.debug(f"Loading thumbnail {i+1}/{len(self.images)}: {img_path.name}")
                     pixmap = self._load_single_thumbnail(img_path)
                     if pixmap:
                         self.thumbnail_cache[img_path] = pixmap
+                        logger.debug(f"Successfully loaded thumbnail for {img_path.name}")
+                    else:
+                        logger.warning(f"Failed to load thumbnail for {img_path.name}")
 
                 # Update button on main thread using QTimer
                 if i in self.thumbnail_buttons and pixmap:
                     btn = self.thumbnail_buttons[i]
                     QTimer.singleShot(0, lambda b=btn, p=pixmap: self._update_thumbnail_ui(b, p))
+                elif i in self.thumbnail_buttons:
+                    logger.warning(f"No pixmap for button {i}: {img_path.name}")
             except Exception as e:
-                logger.error(f"Error loading thumbnail {i}: {e}")
+                logger.error(f"Error loading thumbnail {i}: {e}", exc_info=True)
 
     def _update_thumbnail_ui(self, btn, pixmap):
         """Update thumbnail UI on main thread."""
@@ -470,7 +529,12 @@ class SlideshowManager(QMainWindow):
         """Load a single thumbnail (can be called from background thread)."""
         try:
             if img_path.suffix.lower() in VIDEO_FORMATS:
-                # Extract first frame from video
+                # Try system thumbnail provider first (faster)
+                system_thumb = self._get_system_thumbnail(img_path)
+                if system_thumb:
+                    return system_thumb
+
+                # Fallback: Extract first frame from video
                 if img_path in self.video_frame_cache:
                     frame_path = self.video_frame_cache[img_path]
                 else:
@@ -488,7 +552,30 @@ class SlideshowManager(QMainWindow):
                 img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
                 return self._pil_to_qpixmap(img)
         except Exception as e:
-            logger.error(f"Error loading thumbnail: {e}")
+            logger.error(f"Error loading thumbnail for {img_path.name}: {e}", exc_info=True)
+
+        return None
+
+    def _get_system_thumbnail(self, file_path):
+        """Try to get thumbnail from system thumbnail cache."""
+        try:
+            # Try using ffmpegthumbnailer for videos
+            if shutil.which('ffmpegthumbnailer'):
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    tmp_path = tmp.name
+
+                cmd = ['ffmpegthumbnailer', '-i', str(file_path), '-o', tmp_path, '-s', '120']
+                result = subprocess.run(cmd, capture_output=True, timeout=3)
+
+                if result.returncode == 0 and Path(tmp_path).exists():
+                    pixmap = QPixmap(tmp_path)
+                    if not pixmap.isNull():
+                        Path(tmp_path).unlink()
+                        logger.debug(f"Got thumbnail from ffmpegthumbnailer: {file_path.name}")
+                        return pixmap
+                    Path(tmp_path).unlink()
+        except Exception as e:
+            logger.debug(f"ffmpegthumbnailer failed: {e}")
 
         return None
 
@@ -661,13 +748,13 @@ class SlideshowManager(QMainWindow):
         # Check if any images are selected
         if not hasattr(self, 'selected_images') or not self.selected_images:
             self.log_event("❌ No images selected for slideshow")
-            QMessageBox.warning(self, "Warning", "Please select at least one image for the slideshow.")
+            SelectableMessageBox.warning(self, "Warning", "Please select at least one image for the slideshow.")
             return
 
         # Check if FFmpeg is installed
         if not shutil.which('ffmpeg'):
             self.log_event("❌ FFmpeg not installed")
-            QMessageBox.critical(self, "Error", "FFmpeg is not installed. Please install it first.")
+            SelectableMessageBox.critical(self, "Error", "FFmpeg is not installed. Please install it first.")
             return
 
         # Get the FFmpeg command
@@ -758,27 +845,27 @@ class SlideshowManager(QMainWindow):
 
             if result_returncode == 0:
                 file_size = output_file.stat().st_size / (1024 * 1024)
-                duration = len(selected_images) * 5  # 5 seconds per image
+                duration = len(selected_items) * 5  # 5 seconds per image
                 self.log_event(f"✅ Slideshow created successfully!")
-                self.log_event(f"📦 Size: {file_size:.1f} MB | Duration: ~{duration}s | Images: {len(selected_images)}")
+                self.log_event(f"📦 Size: {file_size:.1f} MB | Duration: ~{duration}s | Images: {len(selected_items)}")
                 self.show_available_videos()
                 logger.info(f"Slideshow created successfully: {output_file} ({file_size:.1f} MB)")
-                QMessageBox.information(self, "Success",
-                    f"✅ Slideshow created: {output_file.name}\nSize: {file_size:.1f} MB | Duration: ~{duration}s | Images: {len(selected_images)}")
+                SelectableMessageBox.information(self, "Success",
+                    f"✅ Slideshow created: {output_file.name}\nSize: {file_size:.1f} MB | Duration: ~{duration}s | Images: {len(selected_items)}")
             else:
                 error_msg = stderr if stderr else "Unknown error"
                 self.log_event(f"❌ FFmpeg error: {error_msg[:100]}")
                 logger.error(f"FFmpeg error: {error_msg}")
-                QMessageBox.critical(self, "FFmpeg Error", f"Error creating slideshow:\n{error_msg[:300]}")
+                SelectableMessageBox.critical(self, "FFmpeg Error", f"Error creating slideshow:\n{error_msg}")
 
         except subprocess.TimeoutExpired:
             logger.error("FFmpeg command timed out")
-            QMessageBox.critical(self, "Error", "Slideshow creation timed out after 300 seconds")
+            SelectableMessageBox.critical(self, "Error", "Slideshow creation timed out after 300 seconds")
         except Exception as e:
             error_msg = f"{str(e)}\n\n{traceback.format_exc()}"
             self.log_event(f"❌ Error: {str(e)[:50]}")
             logger.error(f"Error creating slideshow: {error_msg}")
-            QMessageBox.critical(self, "Error", f"Error creating slideshow:\n{str(e)}")
+            SelectableMessageBox.critical(self, "Error", f"Error creating slideshow:\n{error_msg}")
     
     def open_videos_folder(self):
         """Open videos folder in file manager."""
