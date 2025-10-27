@@ -28,11 +28,12 @@ from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
 
 from PIL import Image
 
-# Configure logging - reduced to INFO for better performance
+# Configure logging - output to console for visibility
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
+        logging.StreamHandler(sys.stdout),
         logging.FileHandler('slideshow_manager.log'),
     ]
 )
@@ -144,10 +145,6 @@ class SlideshowManager(QMainWindow):
         btn_settings.clicked.connect(self.show_settings)
         control_layout.addWidget(btn_settings)
 
-        btn_log = RoundedButton("📋 Event Log")
-        btn_log.clicked.connect(self.show_event_log)
-        control_layout.addWidget(btn_log)
-
         control_layout.addStretch()
         main_layout.addLayout(control_layout)
 
@@ -166,14 +163,9 @@ class SlideshowManager(QMainWindow):
         video_panel = self.create_video_panel()
         splitter.addWidget(video_panel)
 
-        # Event log panel (FOURTH)
-        log_panel = self.create_log_panel()
-        splitter.addWidget(log_panel)
-
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 1)
-        splitter.setStretchFactor(3, 1)
 
         main_layout.addWidget(splitter)
 
@@ -277,22 +269,7 @@ class SlideshowManager(QMainWindow):
 
         panel.setLayout(layout)
         return panel
-    
-    def create_log_panel(self):
-        """Create event log panel."""
-        panel = QWidget()
-        layout = QVBoxLayout()
-        
-        label = QLabel("📋 Event Log")
-        label.setFont(QFont("Arial", 11, QFont.Bold))
-        layout.addWidget(label)
-        
-        self.log_display = QListWidget()
-        layout.addWidget(self.log_display)
-        
-        panel.setLayout(layout)
-        return panel
-    
+
     def apply_dark_theme(self):
         """Apply dark theme to the application."""
         dark_stylesheet = """
@@ -470,14 +447,21 @@ class SlideshowManager(QMainWindow):
                     if pixmap:
                         self.thumbnail_cache[img_path] = pixmap
 
-                # Update button on main thread
+                # Update button on main thread using QTimer
                 if i in self.thumbnail_buttons and pixmap:
                     btn = self.thumbnail_buttons[i]
-                    btn.setIcon(QIcon(pixmap))
-                    btn.setIconSize(QSize(120, 120))
-                    btn.setText("")  # Clear placeholder text
+                    QTimer.singleShot(0, lambda b=btn, p=pixmap: self._update_thumbnail_ui(b, p))
             except Exception as e:
                 logger.error(f"Error loading thumbnail {i}: {e}")
+
+    def _update_thumbnail_ui(self, btn, pixmap):
+        """Update thumbnail UI on main thread."""
+        try:
+            btn.setIcon(QIcon(pixmap))
+            btn.setIconSize(QSize(120, 120))
+            btn.setText("")  # Clear placeholder text
+        except Exception as e:
+            logger.error(f"Error updating thumbnail UI: {e}")
 
     def _load_single_thumbnail(self, img_path):
         """Load a single thumbnail (can be called from background thread)."""
@@ -825,42 +809,9 @@ class SlideshowManager(QMainWindow):
         
         dialog.setLayout(layout)
         dialog.exec_()
-    
-    def show_event_log(self):
-        """Show event log dialog."""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Event Log")
-        dialog.setGeometry(200, 200, 600, 400)
-        
-        layout = QVBoxLayout()
-        log_display = QListWidget()
-        
-        for event in self.log_events[-20:]:
-            log_display.addItem(event)
-        
-        layout.addWidget(log_display)
-        
-        btn_close = RoundedButton("Close")
-        btn_close.clicked.connect(dialog.close)
-        layout.addWidget(btn_close)
-        
-        dialog.setLayout(layout)
-        dialog.exec_()
-    
+
     def log_event(self, message):
-        """Log an event."""
-        if not hasattr(self, 'log_events'):
-            self.log_events = []
-        
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        event = f"[{timestamp}] {message}"
-        self.log_events.append(event)
-        self.log_display.addItem(event)
-        
-        # Keep only last 100 events
-        if len(self.log_events) > 100:
-            self.log_events.pop(0)
-        
+        """Log an event to console."""
         logger.info(message)
 
 def main():
