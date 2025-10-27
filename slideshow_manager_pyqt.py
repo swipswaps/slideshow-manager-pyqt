@@ -28,13 +28,12 @@ from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
 
 from PIL import Image
 
-# Configure logging
+# Configure logging - reduced to INFO for better performance
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('slideshow_manager.log'),
-        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
@@ -74,7 +73,7 @@ class RoundedButton(QPushButton):
 
 class SlideshowManager(QMainWindow):
     """Main application window."""
-    
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Slideshow Manager")
@@ -90,6 +89,10 @@ class SlideshowManager(QMainWindow):
         self.selected_images = set()
         self.previous_selected_images = set()
         self.select_all_state = 0  # 0=normal, 1=all selected, 2=none selected
+
+        # Performance optimization: thumbnail cache
+        self.thumbnail_cache = {}  # {path: QPixmap}
+        self.video_frame_cache = {}  # {path: frame_path}
 
         # Default FFmpeg command (uses image2 demuxer with numbered files)
         # Includes padding to handle odd dimensions and scaling to 1920x1080
@@ -410,60 +413,56 @@ class SlideshowManager(QMainWindow):
                 logger.error(f"Error creating thumbnail for {img_path}: {e}")
 
     def create_thumbnail_with_checkbox(self, index, img_path):
-        """Create a thumbnail widget with checkbox in lower right corner."""
-        container = QWidget()
-        container.setFixedSize(140, 140)
-
-        # Main layout for container
-        main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-
-        # Thumbnail button (takes most of the space)
+        """Create a thumbnail widget with colored border to indicate selection."""
         btn = QPushButton()
-        btn.setFixedSize(120, 120)
+        btn.setFixedSize(130, 130)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFlat(True)
+
+        # Store index for click handling
+        btn.index = index
+        btn.img_path = img_path
+        btn.clicked.connect(lambda: self.toggle_image_selection(index, None))
 
         try:
-            # Check if it's a video file
-            if img_path.suffix.lower() in VIDEO_FORMATS:
-                # Extract first frame from video
-                frame_path = self.extract_video_first_frame(img_path)
-                if frame_path:
-                    img = Image.open(frame_path)
-                    img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
-                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-                        img.save(tmp.name)
-                        pixmap = QPixmap(tmp.name)
-                        btn.setIcon(QIcon(pixmap))
-                        btn.setIconSize(QSize(120, 120))
-                        os.unlink(tmp.name)
-                    os.unlink(frame_path)
-                else:
-                    btn.setText("📹\nNo Frame")
+            # Use cached thumbnail if available
+            if img_path in self.thumbnail_cache:
+                pixmap = self.thumbnail_cache[img_path]
             else:
-                # Regular image file
-                img = Image.open(img_path)
-                img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
-                # Convert PIL image to QPixmap using temporary file
-                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-                    img.save(tmp.name)
-                    pixmap = QPixmap(tmp.name)
-                    btn.setIcon(QIcon(pixmap))
-                    btn.setIconSize(QSize(120, 120))
-                    os.unlink(tmp.name)
+                # Check if it's a video file
+                if img_path.suffix.lower() in VIDEO_FORMATS:
+                    # Extract first frame from video (with caching)
+                    if img_path in self.video_frame_cache:
+                        frame_path = self.video_frame_cache[img_path]
+                    else:
+                        frame_path = self.extract_video_first_frame(img_path)
+                        if frame_path:
+                            self.video_frame_cache[img_path] = frame_path
+
+                    if frame_path:
+                        img = Image.open(frame_path)
+                        img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+                        pixmap = self._pil_to_qpixmap(img)
+                    else:
+                        btn.setText("📹")
+                        pixmap = None
+                else:
+                    # Regular image file
+                    img = Image.open(img_path)
+                    img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+                    pixmap = self._pil_to_qpixmap(img)
+
+                if pixmap:
+                    self.thumbnail_cache[img_path] = pixmap
+
+            if pixmap:
+                btn.setIcon(QIcon(pixmap))
+                btn.setIconSize(QSize(120, 120))
         except Exception as e:
             logger.error(f"Error loading thumbnail: {e}")
 
-        btn.setStyleSheet("""
-            QPushButton {
-                border: 2px solid #3d3d3d;
-                border-radius: 4px;
-                padding: 0px;
-            }
-            QPushButton:hover {
-                border: 2px solid #404040;
-            }
-        """)
+        # Update border color based on selection state
+        self._update_thumbnail_border(btn, index)
 
         # Get file details for tooltip
         try:
@@ -476,35 +475,53 @@ class SlideshowManager(QMainWindow):
         except Exception as e:
             logger.error(f"Error getting file details: {e}")
 
-        main_layout.addWidget(btn)
+        return btn
 
-        # Checkbox in lower right corner
-        checkbox_layout = QHBoxLayout()
-        checkbox_layout.setContentsMargins(0, 0, 0, 0)
-        checkbox_layout.setSpacing(0)
-        checkbox_layout.addStretch()
+    def _pil_to_qpixmap(self, pil_image):
+        """Convert PIL image to QPixmap efficiently."""
+        try:
+            # Convert PIL to QImage directly without temp file
+            data = pil_image.tobytes("RGB", "RGB")
+            qimage = QImage(data, pil_image.width, pil_image.height, QImage.Format_RGB888)
+            return QPixmap.fromImage(qimage)
+        except Exception as e:
+            logger.error(f"Error converting PIL to QPixmap: {e}")
+            return None
 
-        checkbox = QCheckBox()
-        checkbox.setChecked(index in self.selected_images)
-        checkbox.stateChanged.connect(lambda state: self.toggle_image_selection(index, state))
-        checkbox.setStyleSheet("""
-            QCheckBox {
-                spacing: 0px;
-                margin: 0px;
-            }
+    def _update_thumbnail_border(self, btn, index):
+        """Update thumbnail border color based on selection state."""
+        is_selected = index in self.selected_images
+        border_color = "#00ff00" if is_selected else "#3d3d3d"  # Green if selected, gray if not
+        border_width = "4px" if is_selected else "2px"
+
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                border: {border_width} solid {border_color};
+                border-radius: 4px;
+                padding: 0px;
+                background-color: #2b2b2b;
+            }}
+            QPushButton:hover {{
+                border: {border_width} solid #00ff00;
+            }}
         """)
-        checkbox_layout.addWidget(checkbox)
-
-        main_layout.addLayout(checkbox_layout)
-        container.setLayout(main_layout)
-        return container
 
     def toggle_image_selection(self, index, state):
         """Toggle image selection for slideshow."""
-        if state == Qt.Checked:
-            self.selected_images.add(index)
-        else:
+        # Toggle selection state
+        if index in self.selected_images:
             self.selected_images.discard(index)
+        else:
+            self.selected_images.add(index)
+
+        # Update border color for this thumbnail
+        if hasattr(self, 'thumbnails_layout'):
+            # Find and update the button
+            for i in range(self.thumbnails_layout.count()):
+                widget = self.thumbnails_layout.itemAt(i).widget()
+                if isinstance(widget, QPushButton) and hasattr(widget, 'index') and widget.index == index:
+                    self._update_thumbnail_border(widget, index)
+                    break
 
         # Update statistics
         self.update_statistics()
