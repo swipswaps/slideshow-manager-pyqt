@@ -562,24 +562,54 @@ class SlideshowManager(QMainWindow):
                     logger.debug(f"Using cached thumbnail for {img_path.name}")
                 else:
                     logger.debug(f"Loading thumbnail {i+1}/{len(self.images)}: {img_path.name}")
-                    pixmap = self._load_single_thumbnail(img_path)
-                    if pixmap:
-                        self.thumbnail_cache[img_path] = pixmap
+                    # Load image data in background thread (no QPixmap yet)
+                    image_path = self._load_single_thumbnail_path(img_path)
+                    if image_path:
                         logger.debug(f"Successfully loaded thumbnail for {img_path.name}")
                     else:
                         logger.warning(f"Failed to load thumbnail for {img_path.name}")
+                        image_path = None
 
-                # Update button on main thread using QTimer
-                if i in self.thumbnail_buttons and pixmap:
+                # Update button on main thread using QTimer (create QPixmap there)
+                if i in self.thumbnail_buttons and image_path:
                     btn = self.thumbnail_buttons[i]
-                    QTimer.singleShot(0, lambda b=btn, p=pixmap: self._update_thumbnail_ui(b, p))
-                elif i in self.thumbnail_buttons:
-                    logger.warning(f"No pixmap for button {i}: {img_path.name}")
+                    QTimer.singleShot(0, lambda b=btn, p=image_path, idx=i: self._update_thumbnail_ui_from_path(b, p, idx))
+                elif i in self.thumbnail_buttons and not image_path:
+                    logger.warning(f"No image path for button {i}: {img_path.name}")
             except Exception as e:
                 logger.error(f"Error loading thumbnail {i}: {e}", exc_info=True)
 
+    def _update_thumbnail_ui_from_path(self, btn, image_path, index):
+        """Update thumbnail UI on main thread from image path."""
+        try:
+            if not image_path or not Path(image_path).exists():
+                logger.warning(f"Image path doesn't exist: {image_path}")
+                return
+
+            # Create QPixmap on main thread (required!)
+            pixmap = QPixmap(str(image_path))
+            if pixmap.isNull():
+                logger.warning(f"Failed to create QPixmap from: {image_path}")
+                return
+
+            # Scale to thumbnail size
+            pixmap = pixmap.scaledToWidth(120, Qt.SmoothTransformation)
+
+            # Cache it
+            img_path = self.images[index] if index < len(self.images) else None
+            if img_path:
+                self.thumbnail_cache[img_path] = pixmap
+
+            # Update button
+            btn.setIcon(QIcon(pixmap))
+            btn.setIconSize(QSize(120, 120))
+            btn.setText("")  # Clear placeholder text
+            logger.debug(f"Updated thumbnail UI for button {index}")
+        except Exception as e:
+            logger.error(f"Error updating thumbnail UI: {e}", exc_info=True)
+
     def _update_thumbnail_ui(self, btn, pixmap):
-        """Update thumbnail UI on main thread."""
+        """Update thumbnail UI on main thread (legacy)."""
         try:
             btn.setIcon(QIcon(pixmap))
             btn.setIconSize(QSize(120, 120))
@@ -587,8 +617,47 @@ class SlideshowManager(QMainWindow):
         except Exception as e:
             logger.error(f"Error updating thumbnail UI: {e}")
 
+    def _load_single_thumbnail_path(self, img_path):
+        """Load a single thumbnail and return path (can be called from background thread).
+
+        Returns the path to the thumbnail image file, not a QPixmap.
+        QPixmap creation happens on main thread.
+        """
+        try:
+            if img_path.suffix.lower() in VIDEO_FORMATS:
+                # Try system thumbnail provider first (faster)
+                system_thumb_path = self._get_system_thumbnail_path(img_path)
+                if system_thumb_path:
+                    logger.debug(f"Using system thumbnail for video: {img_path.name}")
+                    return system_thumb_path
+
+                # Fallback: Extract first frame from video
+                logger.debug(f"Extracting frame from video: {img_path.name}")
+                if img_path in self.video_frame_cache:
+                    frame_path = self.video_frame_cache[img_path]
+                    logger.debug(f"Using cached frame for: {img_path.name}")
+                else:
+                    frame_path = self.extract_video_first_frame(img_path)
+                    if frame_path:
+                        self.video_frame_cache[img_path] = frame_path
+                        logger.debug(f"Extracted frame for: {img_path.name}")
+
+                if frame_path and Path(frame_path).exists():
+                    logger.debug(f"Loaded video thumbnail: {img_path.name}")
+                    return frame_path
+            else:
+                # Regular image file - just return the path
+                logger.debug(f"Loading image: {img_path.name}")
+                if img_path.exists():
+                    logger.debug(f"Loaded image thumbnail: {img_path.name}")
+                    return str(img_path)
+        except Exception as e:
+            logger.error(f"Error loading thumbnail for {img_path.name}: {e}", exc_info=True)
+
+        return None
+
     def _load_single_thumbnail(self, img_path):
-        """Load a single thumbnail (can be called from background thread)."""
+        """Load a single thumbnail (legacy - returns QPixmap)."""
         try:
             if img_path.suffix.lower() in VIDEO_FORMATS:
                 # Try system thumbnail provider first (faster)
@@ -639,8 +708,48 @@ class SlideshowManager(QMainWindow):
 
         return None
 
+    def _get_system_thumbnail_path(self, file_path):
+        """Try to get thumbnail path from system thumbnail cache or tools.
+
+        Returns path to thumbnail file, not QPixmap.
+        """
+        try:
+            # Try using ffmpegthumbnailer for videos (fastest)
+            if shutil.which('ffmpegthumbnailer'):
+                try:
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                        tmp_path = tmp.name
+
+                    cmd = ['ffmpegthumbnailer', '-i', str(file_path), '-o', tmp_path, '-s', '120']
+                    result = subprocess.run(cmd, capture_output=True, timeout=3)
+
+                    if result.returncode == 0 and Path(tmp_path).exists():
+                        logger.debug(f"Got thumbnail from ffmpegthumbnailer: {file_path.name}")
+                        return tmp_path
+                except Exception as e:
+                    logger.debug(f"ffmpegthumbnailer failed: {e}")
+
+            # Try using thumbnailer (freedesktop.org standard)
+            if shutil.which('thumbnailer'):
+                try:
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                        tmp_path = tmp.name
+
+                    cmd = ['thumbnailer', str(file_path), tmp_path]
+                    result = subprocess.run(cmd, capture_output=True, timeout=3)
+
+                    if result.returncode == 0 and Path(tmp_path).exists():
+                        logger.debug(f"Got thumbnail from thumbnailer: {file_path.name}")
+                        return tmp_path
+                except Exception as e:
+                    logger.debug(f"thumbnailer failed: {e}")
+        except Exception as e:
+            logger.debug(f"System thumbnail provider failed: {e}")
+
+        return None
+
     def _get_system_thumbnail(self, file_path):
-        """Try to get thumbnail from system thumbnail cache or tools."""
+        """Try to get thumbnail from system thumbnail cache or tools (legacy - returns QPixmap)."""
         try:
             # Try using ffmpegthumbnailer for videos (fastest)
             if shutil.which('ffmpegthumbnailer'):
