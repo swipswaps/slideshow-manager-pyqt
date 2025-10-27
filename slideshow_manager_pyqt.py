@@ -59,6 +59,7 @@ class RoundedButton(QPushButton):
                 padding: 8px 16px;
                 font-weight: bold;
                 font-size: 11px;
+                text-align: center;
             }
             QPushButton:hover {
                 background-color: #404040;
@@ -68,6 +69,7 @@ class RoundedButton(QPushButton):
             }
         """)
         self.setCursor(Qt.PointingHandCursor)
+        self.setFlat(False)
 
 class SlideshowManager(QMainWindow):
     """Main application window."""
@@ -354,19 +356,33 @@ class SlideshowManager(QMainWindow):
         # Clear existing thumbnails
         while self.thumbnails_layout.count():
             self.thumbnails_layout.takeAt(0).widget().deleteLater()
-        
-        # Add thumbnails in grid
-        col = 0
+
+        # Initialize selected images set if not exists
+        if not hasattr(self, 'selected_images'):
+            self.selected_images = set(range(len(self.images)))
+
+        # Add thumbnails in grid with checkboxes
         for i, img_path in enumerate(self.images):
             try:
-                thumb = self.create_thumbnail(img_path)
-                self.thumbnails_layout.addWidget(thumb, i // 6, i % 6)
-                col = (i + 1) % 6
+                thumb_widget = self.create_thumbnail_with_checkbox(i, img_path)
+                self.thumbnails_layout.addWidget(thumb_widget, i // 6, i % 6)
             except Exception as e:
                 logger.error(f"Error creating thumbnail for {img_path}: {e}")
-    
-    def create_thumbnail(self, img_path):
-        """Create a thumbnail widget."""
+
+    def create_thumbnail_with_checkbox(self, index, img_path):
+        """Create a thumbnail widget with checkbox."""
+        container = QWidget()
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        # Checkbox
+        checkbox = QCheckBox()
+        checkbox.setChecked(index in self.selected_images)
+        checkbox.stateChanged.connect(lambda state: self.toggle_image_selection(index, state))
+        layout.addWidget(checkbox, alignment=Qt.AlignCenter)
+
+        # Thumbnail button
         btn = QPushButton()
         btn.setFixedSize(120, 120)
 
@@ -374,7 +390,6 @@ class SlideshowManager(QMainWindow):
             img = Image.open(img_path)
             img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
             # Convert PIL image to QPixmap using temporary file
-            import tempfile
             with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
                 img.save(tmp.name)
                 pixmap = QPixmap(tmp.name)
@@ -383,7 +398,7 @@ class SlideshowManager(QMainWindow):
                 os.unlink(tmp.name)
         except Exception as e:
             logger.error(f"Error loading thumbnail: {e}")
-        
+
         btn.setStyleSheet("""
             QPushButton {
                 border: 2px solid #3d3d3d;
@@ -394,17 +409,30 @@ class SlideshowManager(QMainWindow):
                 border: 2px solid #404040;
             }
         """)
-        
-        return btn
+
+        layout.addWidget(btn)
+        container.setLayout(layout)
+        return container
+
+    def toggle_image_selection(self, index, state):
+        """Toggle image selection for slideshow."""
+        if state == Qt.Checked:
+            self.selected_images.add(index)
+        else:
+            self.selected_images.discard(index)
+
+        # Update statistics
+        self.update_statistics()
     
     def update_statistics(self):
         """Update statistics display."""
         total = len(self.images)
         hidden = len(self.hidden_images)
         visible = total - hidden
+        selected = len(self.selected_images) if hasattr(self, 'selected_images') else total
         size_mb = sum(f.stat().st_size for f in self.images) / (1024 * 1024)
-        
-        stats_text = f"Total: {total} | Visible: {visible} | Hidden: {hidden} | Size: {size_mb:.1f} MB"
+
+        stats_text = f"Total: {total} | Selected: {selected} | Visible: {visible} | Hidden: {hidden} | Size: {size_mb:.1f} MB"
         self.stats_label.setText(stats_text)
     
     def show_available_videos(self):
@@ -470,9 +498,15 @@ class SlideshowManager(QMainWindow):
             self.log_event(f"Added {len(files)} image(s)")
     
     def create_slideshow(self):
-        """Create slideshow from images using FFmpeg (runs in background thread)."""
+        """Create slideshow from selected images using FFmpeg (runs in background thread)."""
         if not self.images:
             self.log_event("❌ No images available")
+            return
+
+        # Check if any images are selected
+        if not hasattr(self, 'selected_images') or not self.selected_images:
+            self.log_event("❌ No images selected for slideshow")
+            QMessageBox.warning(self, "Warning", "Please select at least one image for the slideshow.")
             return
 
         # Check if FFmpeg is installed
@@ -498,8 +532,12 @@ class SlideshowManager(QMainWindow):
         output_file = OUTPUT_DIR / f"slideshow_{timestamp}.mp4"
 
         try:
+            # Get selected images in order
+            selected_indices = sorted(self.selected_images)
+            selected_images = [self.images[i] for i in selected_indices]
+
             self.log_event(f"🎬 Creating slideshow: {output_file.name}")
-            self.log_event(f"📊 Processing {len(self.images)} images...")
+            self.log_event(f"📊 Processing {len(selected_images)} selected images...")
 
             # Create temporary directory with symlinks to numbered images
             temp_dir = Path(".slideshow_temp")
@@ -507,12 +545,12 @@ class SlideshowManager(QMainWindow):
             self.log_event(f"📁 Created temp directory")
 
             # Create numbered symlinks with .png extension for FFmpeg image2 demuxer
-            for i, img_path in enumerate(self.images):
+            for i, img_path in enumerate(selected_images):
                 link_path = temp_dir / f"{i+1:04d}.png"
                 if link_path.exists():
                     link_path.unlink()
                 link_path.symlink_to(img_path.resolve())
-            self.log_event(f"🔗 Created {len(self.images)} symlinks")
+            self.log_event(f"🔗 Created {len(selected_images)} symlinks")
 
             # Replace output placeholder in command
             cmd = ffmpeg_cmd.replace('output.mp4', str(output_file))
@@ -550,13 +588,13 @@ class SlideshowManager(QMainWindow):
 
             if result_returncode == 0:
                 file_size = output_file.stat().st_size / (1024 * 1024)
-                duration = len(self.images) * 5  # 5 seconds per image
+                duration = len(selected_images) * 5  # 5 seconds per image
                 self.log_event(f"✅ Slideshow created successfully!")
-                self.log_event(f"📦 Size: {file_size:.1f} MB | Duration: ~{duration}s")
+                self.log_event(f"📦 Size: {file_size:.1f} MB | Duration: ~{duration}s | Images: {len(selected_images)}")
                 self.show_available_videos()
                 logger.info(f"Slideshow created successfully: {output_file} ({file_size:.1f} MB)")
                 QMessageBox.information(self, "Success",
-                    f"✅ Slideshow created: {output_file.name}\nSize: {file_size:.1f} MB | Duration: ~{duration}s")
+                    f"✅ Slideshow created: {output_file.name}\nSize: {file_size:.1f} MB | Duration: ~{duration}s | Images: {len(selected_images)}")
             else:
                 error_msg = stderr if stderr else "Unknown error"
                 self.log_event(f"❌ FFmpeg error: {error_msg[:100]}")
