@@ -1194,30 +1194,107 @@ class SlideshowManager(QMainWindow):
 
         top_layout.addWidget(self.player_stack, 1)
 
-        # Timestamp display (frame-accurate playback time)
-        timestamp_layout = QHBoxLayout()
-        self.timestamp_label = QLabel("00:00:00.000 / 00:00:00.000")
-        self.timestamp_label.setFont(QFont("Courier New", 11, QFont.Bold))
-        self.timestamp_label.setStyleSheet("""
-            QLabel {
+        # Seek bar with timestamp display
+        seek_layout = QVBoxLayout()
+        seek_layout.setSpacing(5)
+
+        # Progress slider
+        from PyQt5.QtWidgets import QSlider
+        self.seek_slider = QSlider(Qt.Horizontal)
+        self.seek_slider.setMinimum(0)
+        self.seek_slider.setMaximum(1000)
+        self.seek_slider.setValue(0)
+        self.seek_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                border: 1px solid #3d3d3d;
+                height: 8px;
+                background: #2a2a2a;
+                border-radius: 4px;
+            }
+            QSlider::handle:horizontal {
+                background: #00ff00;
+                border: 1px solid #00ff00;
+                width: 16px;
+                height: 16px;
+                margin: -5px 0;
+                border-radius: 8px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #00ff88;
+                border: 1px solid #00ff88;
+            }
+            QSlider::sub-page:horizontal {
+                background: #0d7377;
+                border-radius: 4px;
+            }
+        """)
+        self.seek_slider.sliderPressed.connect(self.on_seek_slider_pressed)
+        self.seek_slider.sliderReleased.connect(self.on_seek_slider_released)
+        self.seek_slider.sliderMoved.connect(self.on_seek_slider_moved)
+        seek_layout.addWidget(self.seek_slider)
+
+        # Timestamp display with input capability
+        timestamp_row = QHBoxLayout()
+
+        # Current time (clickable to edit)
+        from PyQt5.QtWidgets import QLineEdit
+        self.timestamp_input = QLineEdit("00:00:00.000")
+        self.timestamp_input.setFont(QFont("Courier New", 11, QFont.Bold))
+        self.timestamp_input.setMaximumWidth(120)
+        self.timestamp_input.setAlignment(Qt.AlignCenter)
+        self.timestamp_input.setStyleSheet("""
+            QLineEdit {
                 color: #00ff00;
                 background-color: #1a1a1a;
                 padding: 5px 10px;
                 border: 1px solid #3d3d3d;
                 border-radius: 4px;
             }
+            QLineEdit:hover {
+                border: 1px solid #00ff00;
+            }
+            QLineEdit:focus {
+                border: 1px solid #00ff00;
+                background-color: #2a2a2a;
+            }
         """)
-        self.timestamp_label.setAlignment(Qt.AlignCenter)
-        timestamp_layout.addStretch()
-        timestamp_layout.addWidget(self.timestamp_label)
-        timestamp_layout.addStretch()
-        top_layout.addLayout(timestamp_layout)
+        self.timestamp_input.setToolTip("Click to enter timestamp (HH:MM:SS.mmm or MM:SS or SS)")
+        self.timestamp_input.returnPressed.connect(self.on_timestamp_entered)
+        timestamp_row.addWidget(self.timestamp_input)
 
-        # Create timer for updating timestamp
+        # Separator
+        separator = QLabel("/")
+        separator.setStyleSheet("color: #666666; font-size: 14px; font-weight: bold;")
+        timestamp_row.addWidget(separator)
+
+        # Total duration
+        self.duration_label = QLabel("00:00:00.000")
+        self.duration_label.setFont(QFont("Courier New", 11, QFont.Bold))
+        self.duration_label.setStyleSheet("""
+            QLabel {
+                color: #888888;
+                background-color: #1a1a1a;
+                padding: 5px 10px;
+                border: 1px solid #3d3d3d;
+                border-radius: 4px;
+            }
+        """)
+        self.duration_label.setAlignment(Qt.AlignCenter)
+        timestamp_row.addWidget(self.duration_label)
+
+        timestamp_row.addStretch()
+        seek_layout.addLayout(timestamp_row)
+
+        top_layout.addLayout(seek_layout)
+
+        # Create timer for updating timestamp and seek bar
         from PyQt5.QtCore import QTimer
         self.timestamp_timer = QTimer()
         self.timestamp_timer.timeout.connect(self.update_timestamp)
         self.timestamp_timer.start(50)  # Update every 50ms for smooth display
+
+        # Flag to prevent seek slider updates while user is dragging
+        self.seeking = False
 
         # Timeline widget
         timeline_header = QLabel("🎞️ Timeline (Drag & Drop)")
@@ -1229,30 +1306,118 @@ class SlideshowManager(QMainWindow):
         self.timeline_widget.timeline_changed.connect(self.on_timeline_changed)
         top_layout.addWidget(self.timeline_widget)
 
-        # Simplified control buttons
+        # Professional playback controls
         controls_layout = QHBoxLayout()
+        controls_layout.setSpacing(8)
 
+        # Playback controls group
+        playback_group = QHBoxLayout()
+        playback_group.setSpacing(4)
+
+        # Previous/Skip backward
+        btn_previous = RoundedButton("⏮️")
+        btn_previous.setMaximumWidth(50)
+        btn_previous.setToolTip("Previous video (Shift+Left)")
+        btn_previous.clicked.connect(self.previous_video)
+        playback_group.addWidget(btn_previous)
+
+        # Rewind 10 seconds
+        btn_rewind_10 = RoundedButton("⏪ 10s")
+        btn_rewind_10.setMaximumWidth(70)
+        btn_rewind_10.setToolTip("Rewind 10 seconds (Left Arrow)")
+        btn_rewind_10.clicked.connect(lambda: self.skip_time(-10000))
+        playback_group.addWidget(btn_rewind_10)
+
+        # Rewind 1 second
+        btn_rewind_1 = RoundedButton("◀️ 1s")
+        btn_rewind_1.setMaximumWidth(65)
+        btn_rewind_1.setToolTip("Rewind 1 second (Ctrl+Left)")
+        btn_rewind_1.clicked.connect(lambda: self.skip_time(-1000))
+        playback_group.addWidget(btn_rewind_1)
+
+        # Play/Pause (larger button)
         self.btn_play_pause = RoundedButton("▶️ Play")
+        self.btn_play_pause.setMinimumWidth(100)
+        self.btn_play_pause.setStyleSheet("""
+            QPushButton {
+                background-color: #0d7377;
+                color: white;
+                border: 2px solid #14FFEC;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #14FFEC;
+                color: #0a0e27;
+            }
+            QPushButton:pressed {
+                background-color: #0a5f62;
+            }
+        """)
+        self.btn_play_pause.setToolTip("Play/Pause (Space)")
         self.btn_play_pause.clicked.connect(self.vlc_play_pause_toggle)
-        controls_layout.addWidget(self.btn_play_pause)
+        playback_group.addWidget(self.btn_play_pause)
 
-        btn_stop = RoundedButton("⏹️ Stop")
+        # Stop button
+        btn_stop = RoundedButton("⏹️")
+        btn_stop.setMaximumWidth(50)
+        btn_stop.setToolTip("Stop playback")
         btn_stop.clicked.connect(self.vlc_stop)
-        controls_layout.addWidget(btn_stop)
+        playback_group.addWidget(btn_stop)
 
-        btn_play_timeline = RoundedButton("▶️ Play Timeline")
+        # Fast forward 1 second
+        btn_forward_1 = RoundedButton("1s ▶️")
+        btn_forward_1.setMaximumWidth(65)
+        btn_forward_1.setToolTip("Forward 1 second (Ctrl+Right)")
+        btn_forward_1.clicked.connect(lambda: self.skip_time(1000))
+        playback_group.addWidget(btn_forward_1)
+
+        # Fast forward 10 seconds
+        btn_forward_10 = RoundedButton("10s ⏩")
+        btn_forward_10.setMaximumWidth(70)
+        btn_forward_10.setToolTip("Forward 10 seconds (Right Arrow)")
+        btn_forward_10.clicked.connect(lambda: self.skip_time(10000))
+        playback_group.addWidget(btn_forward_10)
+
+        # Next/Skip forward
+        btn_next = RoundedButton("⏭️")
+        btn_next.setMaximumWidth(50)
+        btn_next.setToolTip("Next video (Shift+Right)")
+        btn_next.clicked.connect(self.next_video)
+        playback_group.addWidget(btn_next)
+
+        controls_layout.addLayout(playback_group)
+
+        # Separator
+        separator_line = QFrame()
+        separator_line.setFrameShape(QFrame.VLine)
+        separator_line.setFrameShadow(QFrame.Sunken)
+        separator_line.setStyleSheet("color: #3d3d3d;")
+        controls_layout.addWidget(separator_line)
+
+        # Timeline controls group
+        timeline_group = QHBoxLayout()
+        timeline_group.setSpacing(4)
+
+        btn_play_timeline = RoundedButton("▶️ Timeline")
+        btn_play_timeline.setToolTip("Play all items in timeline")
         btn_play_timeline.clicked.connect(self.play_timeline)
-        controls_layout.addWidget(btn_play_timeline)
-
-        controls_layout.addStretch()
+        timeline_group.addWidget(btn_play_timeline)
 
         btn_export = RoundedButton("📤 Export")
+        btn_export.setToolTip("Export timeline as FFmpeg script")
         btn_export.clicked.connect(self.export_timeline_ffmpeg)
-        controls_layout.addWidget(btn_export)
+        timeline_group.addWidget(btn_export)
 
         btn_clear = RoundedButton("🗑️ Clear")
+        btn_clear.setToolTip("Clear all timeline items")
         btn_clear.clicked.connect(self.clear_timeline)
-        controls_layout.addWidget(btn_clear)
+        timeline_group.addWidget(btn_clear)
+
+        controls_layout.addLayout(timeline_group)
+        controls_layout.addStretch()
 
         top_layout.addLayout(controls_layout)
 
@@ -2026,7 +2191,7 @@ class SlideshowManager(QMainWindow):
             self.log_event(f"❌ Error: {e}")
 
     def update_timestamp(self):
-        """Update the timestamp display with current playback time."""
+        """Update the timestamp display and seek slider with current playback time."""
         try:
             current_state = self.media_player.get_state()
 
@@ -2052,41 +2217,76 @@ class SlideshowManager(QMainWindow):
                     current_str = f"{current_h:02d}:{current_m:02d}:{current_s:02d}.{current_ms:03d}"
                     total_str = f"{total_h:02d}:{total_m:02d}:{total_s:02d}.{total_ms:03d}"
 
-                    self.timestamp_label.setText(f"{current_str} / {total_str}")
+                    # Update timestamp input (only if not currently editing)
+                    if not self.timestamp_input.hasFocus():
+                        self.timestamp_input.setText(current_str)
+
+                    # Update duration label
+                    self.duration_label.setText(total_str)
+
+                    # Update seek slider (only if not currently seeking)
+                    if not self.seeking:
+                        slider_position = int((current_time_ms / total_time_ms) * 1000)
+                        self.seek_slider.setValue(slider_position)
 
                     # Change color based on state
                     if current_state == vlc.State.Playing:
-                        self.timestamp_label.setStyleSheet("""
-                            QLabel {
+                        self.timestamp_input.setStyleSheet("""
+                            QLineEdit {
                                 color: #00ff00;
                                 background-color: #1a1a1a;
                                 padding: 5px 10px;
                                 border: 1px solid #3d3d3d;
                                 border-radius: 4px;
                             }
+                            QLineEdit:hover {
+                                border: 1px solid #00ff00;
+                            }
+                            QLineEdit:focus {
+                                border: 1px solid #00ff00;
+                                background-color: #2a2a2a;
+                            }
                         """)
                     else:  # Paused
-                        self.timestamp_label.setStyleSheet("""
-                            QLabel {
+                        self.timestamp_input.setStyleSheet("""
+                            QLineEdit {
                                 color: #ffaa00;
                                 background-color: #1a1a1a;
                                 padding: 5px 10px;
                                 border: 1px solid #3d3d3d;
                                 border-radius: 4px;
                             }
+                            QLineEdit:hover {
+                                border: 1px solid #ffaa00;
+                            }
+                            QLineEdit:focus {
+                                border: 1px solid #ffaa00;
+                                background-color: #2a2a2a;
+                            }
                         """)
                 else:
-                    self.timestamp_label.setText("00:00:00.000 / 00:00:00.000")
+                    self.timestamp_input.setText("00:00:00.000")
+                    self.duration_label.setText("00:00:00.000")
+                    self.seek_slider.setValue(0)
             else:
                 # Not playing or paused - show default
-                self.timestamp_label.setText("00:00:00.000 / 00:00:00.000")
-                self.timestamp_label.setStyleSheet("""
-                    QLabel {
+                self.timestamp_input.setText("00:00:00.000")
+                self.duration_label.setText("00:00:00.000")
+                self.seek_slider.setValue(0)
+                self.timestamp_input.setStyleSheet("""
+                    QLineEdit {
                         color: #666666;
                         background-color: #1a1a1a;
                         padding: 5px 10px;
                         border: 1px solid #3d3d3d;
                         border-radius: 4px;
+                    }
+                    QLineEdit:hover {
+                        border: 1px solid #666666;
+                    }
+                    QLineEdit:focus {
+                        border: 1px solid #666666;
+                        background-color: #2a2a2a;
                     }
                 """)
         except Exception as e:
@@ -2105,6 +2305,183 @@ class SlideshowManager(QMainWindow):
             self.show_video_grid()
         except Exception as e:
             logger.error(f"Error stopping video: {e}")
+
+    def skip_time(self, milliseconds):
+        """Skip forward or backward by specified milliseconds."""
+        try:
+            current_state = self.media_player.get_state()
+            if current_state not in [vlc.State.Playing, vlc.State.Paused]:
+                self.log_event("❌ No video playing")
+                return
+
+            current_time = self.media_player.get_time()
+            total_time = self.media_player.get_length()
+
+            if current_time < 0 or total_time <= 0:
+                return
+
+            new_time = max(0, min(current_time + milliseconds, total_time))
+            self.media_player.set_time(int(new_time))
+
+            direction = "⏩" if milliseconds > 0 else "⏪"
+            seconds = abs(milliseconds) / 1000
+            self.log_event(f"{direction} Skipped {seconds:.1f}s")
+            logger.info(f"Skipped {milliseconds}ms to {new_time}ms")
+        except Exception as e:
+            logger.error(f"Error skipping time: {e}")
+
+    def previous_video(self):
+        """Play the previous video in the list."""
+        try:
+            if not self.available_videos:
+                self.log_event("❌ No videos available")
+                return
+
+            current_index = self.video_combo.currentIndex()
+            if current_index > 0:
+                self.video_combo.setCurrentIndex(current_index - 1)
+                # Auto-play the previous video
+                video_path = self.available_videos[current_index - 1]
+                media = self.vlc_instance.media_new(str(video_path))
+                self.media_player.set_media(media)
+                self.media_player.play()
+                self.btn_play_pause.setText("⏸️ Pause")
+                self.player_stack.setCurrentIndex(0)
+                self.log_event(f"⏮️ Previous: {video_path.name}")
+                logger.info(f"Playing previous video: {video_path.name}")
+            else:
+                self.log_event("⏮️ Already at first video")
+        except Exception as e:
+            logger.error(f"Error playing previous video: {e}")
+
+    def next_video(self):
+        """Play the next video in the list."""
+        try:
+            if not self.available_videos:
+                self.log_event("❌ No videos available")
+                return
+
+            current_index = self.video_combo.currentIndex()
+            if current_index < len(self.available_videos) - 1:
+                self.video_combo.setCurrentIndex(current_index + 1)
+                # Auto-play the next video
+                video_path = self.available_videos[current_index + 1]
+                media = self.vlc_instance.media_new(str(video_path))
+                self.media_player.set_media(media)
+                self.media_player.play()
+                self.btn_play_pause.setText("⏸️ Pause")
+                self.player_stack.setCurrentIndex(0)
+                self.log_event(f"⏭️ Next: {video_path.name}")
+                logger.info(f"Playing next video: {video_path.name}")
+            else:
+                self.log_event("⏭️ Already at last video")
+        except Exception as e:
+            logger.error(f"Error playing next video: {e}")
+
+    def on_seek_slider_pressed(self):
+        """Handle seek slider press - pause updates."""
+        self.seeking = True
+
+    def on_seek_slider_released(self):
+        """Handle seek slider release - seek to position."""
+        try:
+            self.seeking = False
+            current_state = self.media_player.get_state()
+
+            if current_state not in [vlc.State.Playing, vlc.State.Paused]:
+                return
+
+            total_time = self.media_player.get_length()
+            if total_time <= 0:
+                return
+
+            # Calculate new position
+            slider_value = self.seek_slider.value()
+            new_time = int((slider_value / 1000.0) * total_time)
+
+            # Seek to new position
+            self.media_player.set_time(new_time)
+            self.log_event(f"⏩ Seeked to {self.format_time(new_time)}")
+            logger.info(f"Seeked to {new_time}ms")
+        except Exception as e:
+            logger.error(f"Error seeking: {e}")
+
+    def on_seek_slider_moved(self, value):
+        """Handle seek slider movement - update timestamp preview."""
+        try:
+            current_state = self.media_player.get_state()
+            if current_state not in [vlc.State.Playing, vlc.State.Paused]:
+                return
+
+            total_time = self.media_player.get_length()
+            if total_time <= 0:
+                return
+
+            # Calculate preview time
+            preview_time = int((value / 1000.0) * total_time)
+            preview_str = self.format_time(preview_time)
+
+            # Update timestamp input with preview
+            self.timestamp_input.setText(preview_str)
+        except Exception as e:
+            pass
+
+    def on_timestamp_entered(self):
+        """Handle timestamp input - seek to entered time."""
+        try:
+            timestamp_str = self.timestamp_input.text().strip()
+
+            # Parse timestamp (supports HH:MM:SS.mmm, MM:SS, or SS)
+            parts = timestamp_str.replace('.', ':').split(':')
+
+            if len(parts) == 1:
+                # Just seconds
+                total_ms = int(float(parts[0]) * 1000)
+            elif len(parts) == 2:
+                # MM:SS
+                total_ms = int(parts[0]) * 60000 + int(float(parts[1]) * 1000)
+            elif len(parts) == 3:
+                # HH:MM:SS
+                total_ms = int(parts[0]) * 3600000 + int(parts[1]) * 60000 + int(float(parts[2]) * 1000)
+            elif len(parts) == 4:
+                # HH:MM:SS.mmm
+                total_ms = int(parts[0]) * 3600000 + int(parts[1]) * 60000 + int(parts[2]) * 1000 + int(parts[3])
+            else:
+                self.log_event("❌ Invalid timestamp format")
+                return
+
+            # Check if video is playing
+            current_state = self.media_player.get_state()
+            if current_state not in [vlc.State.Playing, vlc.State.Paused]:
+                self.log_event("❌ No video playing")
+                return
+
+            # Check if time is within bounds
+            total_time = self.media_player.get_length()
+            if total_ms > total_time:
+                self.log_event("❌ Timestamp exceeds video duration")
+                return
+
+            # Seek to timestamp
+            self.media_player.set_time(total_ms)
+            self.log_event(f"⏩ Jumped to {self.format_time(total_ms)}")
+            logger.info(f"Jumped to timestamp: {total_ms}ms")
+
+            # Remove focus from input
+            self.timestamp_input.clearFocus()
+        except ValueError:
+            self.log_event("❌ Invalid timestamp format")
+        except Exception as e:
+            logger.error(f"Error parsing timestamp: {e}")
+            self.log_event(f"❌ Error: {e}")
+
+    def format_time(self, milliseconds):
+        """Format milliseconds to HH:MM:SS.mmm string."""
+        h = milliseconds // 3600000
+        m = (milliseconds % 3600000) // 60000
+        s = (milliseconds % 60000) // 1000
+        ms = milliseconds % 1000
+        return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
 
     def show_video_grid(self):
         """Display video thumbnails in the player area when stopped."""
