@@ -719,19 +719,21 @@ class SlideshowManager(QMainWindow):
             self.log_event("❌ FFmpeg command is empty")
             return
 
+        # Make a copy of selected indices to avoid race conditions with background thread
+        selected_indices = sorted(self.selected_images.copy())
+
         # Run in background thread to prevent UI lockup
-        thread = threading.Thread(target=self._create_slideshow_worker, args=(ffmpeg_cmd,), daemon=True)
+        thread = threading.Thread(target=self._create_slideshow_worker, args=(ffmpeg_cmd, selected_indices), daemon=True)
         thread.start()
 
-    def _create_slideshow_worker(self, ffmpeg_cmd):
+    def _create_slideshow_worker(self, ffmpeg_cmd, selected_indices):
         """Worker thread for slideshow creation."""
         # Generate output filename
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         output_file = OUTPUT_DIR / f"slideshow_{timestamp}.mp4"
 
         try:
-            # Get selected images in order
-            selected_indices = sorted(self.selected_images)
+            # Get selected items in order (indices passed from main thread to avoid race conditions)
             selected_items = [self.images[i] for i in selected_indices]
 
             self.log_event(f"🎬 Creating slideshow: {output_file.name}")
@@ -801,13 +803,13 @@ class SlideshowManager(QMainWindow):
 
             if result_returncode == 0:
                 file_size = output_file.stat().st_size / (1024 * 1024)
-                duration = len(selected_images) * 5  # 5 seconds per image
+                duration = len(selected_items) * 5  # 5 seconds per image
                 self.log_event(f"✅ Slideshow created successfully!")
-                self.log_event(f"📦 Size: {file_size:.1f} MB | Duration: ~{duration}s | Images: {len(selected_images)}")
+                self.log_event(f"📦 Size: {file_size:.1f} MB | Duration: ~{duration}s | Images: {len(selected_items)}")
                 self.show_available_videos()
                 logger.info(f"Slideshow created successfully: {output_file} ({file_size:.1f} MB)")
                 QMessageBox.information(self, "Success",
-                    f"✅ Slideshow created: {output_file.name}\nSize: {file_size:.1f} MB | Duration: ~{duration}s | Images: {len(selected_images)}")
+                    f"✅ Slideshow created: {output_file.name}\nSize: {file_size:.1f} MB | Duration: ~{duration}s | Images: {len(selected_items)}")
             else:
                 error_msg = stderr if stderr else "Unknown error"
                 self.log_event(f"❌ FFmpeg error: {error_msg[:100]}")
@@ -891,9 +893,18 @@ def main():
     import signal
     def signal_handler(sig, frame):
         logger.info("Received Ctrl-C, shutting down gracefully...")
+        # Close any open dialogs first
+        for widget in app.topLevelWidgets():
+            if isinstance(widget, QDialog) and widget.isVisible():
+                widget.close()
         app.quit()
 
     signal.signal(signal.SIGINT, signal_handler)
+
+    # Allow Ctrl-C to interrupt even when dialogs are open
+    timer = QTimer()
+    timer.timeout.connect(lambda: None)
+    timer.start(100)
 
     window = SlideshowManager()
     window.show()
