@@ -494,8 +494,8 @@ class TimelineWidget(QFrame):
         self.thumbnail_widgets = []  # List of TimelineThumbnail widgets
 
         self.setAcceptDrops(True)
-        self.setMinimumHeight(120)
-        self.setMaximumHeight(120)
+        self.setMinimumHeight(100)
+        self.setMaximumHeight(150)
 
         # Styling
         self.setStyleSheet("""
@@ -998,7 +998,8 @@ class SlideshowManager(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Slideshow Manager")
-        self.setGeometry(100, 100, 1200, 900)
+        self.setGeometry(100, 100, 1400, 900)  # Wider initial size for better layout
+        self.setMinimumSize(1000, 700)  # Larger minimum size to ensure all controls are accessible
 
         # Data
         self.images = []
@@ -1093,9 +1094,15 @@ class SlideshowManager(QMainWindow):
         video_panel = self.create_video_panel()
         splitter.addWidget(video_panel)
 
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 1)
+        # Set initial sizes: thumbnails get more space, other panels are collapsible
+        splitter.setStretchFactor(0, 3)  # Thumbnails panel - most space
+        splitter.setStretchFactor(1, 1)  # FFmpeg panel - medium space
+        splitter.setStretchFactor(2, 2)  # Video panel - medium-large space
+
+        # Set minimum sizes for each panel to ensure they're always accessible
+        splitter.setCollapsible(0, False)  # Thumbnails panel cannot be collapsed
+        splitter.setCollapsible(1, True)   # FFmpeg panel can be collapsed
+        splitter.setCollapsible(2, False)  # Video panel cannot be collapsed
 
         main_layout.addWidget(splitter)
 
@@ -1104,9 +1111,17 @@ class SlideshowManager(QMainWindow):
     
     def create_video_panel(self):
         """Create video player panel with embedded VLC and playlist functionality."""
+        # Create scroll area wrapper for the entire panel
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setStyleSheet("QScrollArea { border: none; background-color: #1e1e1e; }")
+
         panel = QWidget()
+        panel.setMinimumHeight(400)  # Ensure panel has minimum height for controls
         main_layout = QHBoxLayout()
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(8)
 
         # Left side: Player
@@ -1132,13 +1147,13 @@ class SlideshowManager(QMainWindow):
         self.media_player = self.vlc_instance.media_player_new()
 
         # Create a stacked widget to hold both VLC player and video thumbnail grid
-        from PyQt5.QtWidgets import QStackedWidget, QScrollArea
+        from PyQt5.QtWidgets import QStackedWidget
         self.player_stack = QStackedWidget()
 
         # Page 0: VLC player widget
         self.vlc_widget = QWidget()
         self.vlc_widget.setStyleSheet("background-color: #1a1a1a; border-radius: 4px;")
-        self.vlc_widget.setMinimumSize(640, 360)  # FIXED: Set minimum size so widget is visible
+        self.vlc_widget.setMinimumSize(400, 225)  # Smaller minimum size for better resizing
 
         # CRITICAL FIX: Attach VLC to the widget's window handle
         # This is platform-specific and required for embedded playback
@@ -1320,7 +1335,10 @@ class SlideshowManager(QMainWindow):
         main_layout.addLayout(right_layout, 1)
 
         panel.setLayout(main_layout)
-        return panel
+
+        # Set the panel as the scroll area's widget
+        scroll_area.setWidget(panel)
+        return scroll_area
 
     def create_ffmpeg_panel(self):
         """Create FFmpeg command editor panel."""
