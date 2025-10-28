@@ -10,9 +10,20 @@ Create video slideshows from selected images with real-time progress tracking, v
 ### 2. JSON Editor & Preview (`slideshow_json_editor.py`)
 Create and edit slideshow configurations in JSON format with live preview.
 
-## ✨ Key Features (v2.1)
+## ✨ Key Features (v2.2)
 
 ### Main Application
+
+#### Drag-and-Drop Timeline (NEW in v2.2) 🎞️
+- **Visual Timeline Editor**: Drag thumbnails from gallery or video grid to timeline
+- **Reorder by Dragging**: Rearrange timeline items by dragging within timeline
+- **Bidirectional Sync**: Timeline automatically syncs with playlist
+- **Timeline Controls**: Play, Export, and Clear buttons for timeline
+- **Visual Feedback**: Green border when populated, dashed border when empty
+- **Right-Click to Remove**: Context menu to remove items from timeline
+- **Horizontal Scrolling**: Scrollable layout for long timelines
+- **Thumbnail Preview**: Shows video/image thumbnails in timeline
+- **Drag from Multiple Sources**: Works with both main gallery and video grid
 
 #### Image Management
 - **Selective Image Processing**: Checkbox on each thumbnail to choose which images to include
@@ -22,29 +33,32 @@ Create and edit slideshow configurations in JSON format with live preview.
 - **Modern UI**: Dark theme, rounded buttons, resizable panels
 - **Image Statistics**: Total, selected, visible, hidden, and size information
 
-#### Video Player Integration (ENHANCED in v2.1)
+#### Video Player Integration (ENHANCED in v2.2)
 - **Embedded VLC Player**: Play videos directly in the app
 - **Video Thumbnail Grid**: When stopped, displays clickable video thumbnails in player area
 - **Smart Playback Controls**: Single Play/Pause toggle button that changes based on state
 - **Click to Play**: Click any video thumbnail to play instantly
 - **Ctrl+Click to Select**: Select videos for playlist without playing
+- **Drag to Timeline**: Drag video thumbnails directly to timeline (NEW in v2.2)
 - **Multiple Players**: VLC, MPV, Celluloid, Shotcut, FFplay, or Totem
 - **Platform Support**: Linux, Windows, macOS
 - **Background Thumbnail Loading**: Video frames extracted asynchronously
 
-#### Video Playlist Manager (v2.0)
+#### Video Playlist Manager (ENHANCED in v2.2)
 - **Build Custom Playlists**: Add videos in any order from available slideshows
 - **Multiple Selection Methods**:
   - Click "Add Selected" button to add from dropdown
   - Ctrl+Click video thumbnails in player grid
   - Ctrl+Click video thumbnails in main gallery
-- **Reorder Videos**: Move items up/down with buttons or keyboard shortcuts
+  - Drag thumbnails to timeline (NEW in v2.2)
+- **Reorder Videos**: Move items up/down with buttons, keyboard shortcuts, or drag-and-drop (NEW)
 - **Duplicate Detection**: Warns when adding duplicate videos
 - **File Validation**: Checks if video files exist before adding
 - **Playlist Count**: Shows item count and estimated duration
 - **Save/Load Playlists**: Store playlists in SQLite database for reuse
 - **VLC Playback**: Play entire playlists sequentially
 - **Keyboard Shortcuts**: Delete, Ctrl+Up, Ctrl+Down for quick operations
+- **Timeline Sync**: Playlist automatically syncs with visual timeline (NEW in v2.2)
 
 #### FFmpeg Export (v2.0)
 - **3 Concatenation Methods**:
