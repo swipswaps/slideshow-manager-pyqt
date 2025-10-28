@@ -469,13 +469,9 @@ class TimelineThumbnail(QPushButton):
 
         drag.setHotSpot(QPoint(30, 30))
 
-        # Execute drag
-        result = drag.exec_(Qt.MoveAction)
+        # Execute drag - don't remove after, let TimelineWidget handle reordering
+        drag.exec_(Qt.MoveAction)
         self.setCursor(Qt.OpenHandCursor)
-
-        # If drag was successful (moved), remove this thumbnail
-        if result == Qt.MoveAction:
-            self.removed.emit(self)
 
     def mouseReleaseEvent(self, event):
         """Reset cursor on release."""
@@ -645,12 +641,22 @@ class TimelineWidget(QFrame):
         try:
             old_index = [str(p) for p in self.timeline_items].index(str(file_path))
         except ValueError:
+            logger.warning(f"Item not found in timeline: {file_path}")
+            return
+
+        # Don't reorder if dropping in same position
+        if old_index == new_index or old_index == new_index - 1:
+            logger.debug(f"Item already at position {old_index}")
             return
 
         # Remove from old position
         self.timeline_items.pop(old_index)
         old_widget = self.thumbnail_widgets.pop(old_index)
         self.timeline_layout.removeWidget(old_widget)
+
+        # Adjust new_index if moving forward (since we removed an item)
+        if new_index > old_index:
+            new_index -= 1
 
         # Insert at new position
         new_index = min(new_index, len(self.timeline_items))
@@ -659,7 +665,7 @@ class TimelineWidget(QFrame):
         self.timeline_layout.insertWidget(new_index, old_widget)
 
         self.timeline_changed.emit(self.timeline_items)
-        logger.info(f"Reordered in timeline: {file_path.name} to position {new_index}")
+        logger.info(f"Reordered in timeline: {file_path.name} from position {old_index} to {new_index}")
 
     def clear(self):
         """Clear all items from timeline."""
@@ -1187,6 +1193,31 @@ class SlideshowManager(QMainWindow):
         self.player_stack.setCurrentIndex(0)
 
         top_layout.addWidget(self.player_stack, 1)
+
+        # Timestamp display (frame-accurate playback time)
+        timestamp_layout = QHBoxLayout()
+        self.timestamp_label = QLabel("00:00:00.000 / 00:00:00.000")
+        self.timestamp_label.setFont(QFont("Courier New", 11, QFont.Bold))
+        self.timestamp_label.setStyleSheet("""
+            QLabel {
+                color: #00ff00;
+                background-color: #1a1a1a;
+                padding: 5px 10px;
+                border: 1px solid #3d3d3d;
+                border-radius: 4px;
+            }
+        """)
+        self.timestamp_label.setAlignment(Qt.AlignCenter)
+        timestamp_layout.addStretch()
+        timestamp_layout.addWidget(self.timestamp_label)
+        timestamp_layout.addStretch()
+        top_layout.addLayout(timestamp_layout)
+
+        # Create timer for updating timestamp
+        from PyQt5.QtCore import QTimer
+        self.timestamp_timer = QTimer()
+        self.timestamp_timer.timeout.connect(self.update_timestamp)
+        self.timestamp_timer.start(50)  # Update every 50ms for smooth display
 
         # Timeline widget
         timeline_header = QLabel("🎞️ Timeline (Drag & Drop)")
@@ -1993,6 +2024,74 @@ class SlideshowManager(QMainWindow):
         except Exception as e:
             logger.error(f"Error toggling play/pause: {e}")
             self.log_event(f"❌ Error: {e}")
+
+    def update_timestamp(self):
+        """Update the timestamp display with current playback time."""
+        try:
+            current_state = self.media_player.get_state()
+
+            if current_state in [vlc.State.Playing, vlc.State.Paused]:
+                # Get current time in milliseconds
+                current_time_ms = self.media_player.get_time()
+                # Get total duration in milliseconds
+                total_time_ms = self.media_player.get_length()
+
+                if current_time_ms >= 0 and total_time_ms > 0:
+                    # Convert to hours:minutes:seconds.milliseconds
+                    current_h = current_time_ms // 3600000
+                    current_m = (current_time_ms % 3600000) // 60000
+                    current_s = (current_time_ms % 60000) // 1000
+                    current_ms = current_time_ms % 1000
+
+                    total_h = total_time_ms // 3600000
+                    total_m = (total_time_ms % 3600000) // 60000
+                    total_s = (total_time_ms % 60000) // 1000
+                    total_ms = total_time_ms % 1000
+
+                    # Format timestamp
+                    current_str = f"{current_h:02d}:{current_m:02d}:{current_s:02d}.{current_ms:03d}"
+                    total_str = f"{total_h:02d}:{total_m:02d}:{total_s:02d}.{total_ms:03d}"
+
+                    self.timestamp_label.setText(f"{current_str} / {total_str}")
+
+                    # Change color based on state
+                    if current_state == vlc.State.Playing:
+                        self.timestamp_label.setStyleSheet("""
+                            QLabel {
+                                color: #00ff00;
+                                background-color: #1a1a1a;
+                                padding: 5px 10px;
+                                border: 1px solid #3d3d3d;
+                                border-radius: 4px;
+                            }
+                        """)
+                    else:  # Paused
+                        self.timestamp_label.setStyleSheet("""
+                            QLabel {
+                                color: #ffaa00;
+                                background-color: #1a1a1a;
+                                padding: 5px 10px;
+                                border: 1px solid #3d3d3d;
+                                border-radius: 4px;
+                            }
+                        """)
+                else:
+                    self.timestamp_label.setText("00:00:00.000 / 00:00:00.000")
+            else:
+                # Not playing or paused - show default
+                self.timestamp_label.setText("00:00:00.000 / 00:00:00.000")
+                self.timestamp_label.setStyleSheet("""
+                    QLabel {
+                        color: #666666;
+                        background-color: #1a1a1a;
+                        padding: 5px 10px;
+                        border: 1px solid #3d3d3d;
+                        border-radius: 4px;
+                    }
+                """)
+        except Exception as e:
+            # Silently fail - don't spam logs
+            pass
 
     def vlc_stop(self):
         """Stop the video and show video thumbnail grid."""
