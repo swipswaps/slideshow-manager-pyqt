@@ -636,6 +636,7 @@ class SlideshowManager(QMainWindow):
 
         # Playlist management
         self.current_playlist = []  # List of video paths in order
+        self.selected_videos_for_playlist = set()  # Set of video paths selected for playlist
 
         # Load configuration
         self.load_config()
@@ -840,7 +841,19 @@ class SlideshowManager(QMainWindow):
         # Playlist control buttons
         playlist_btn_layout = QVBoxLayout()
 
-        btn_add_to_playlist = RoundedButton("➕ Add Selected")
+        # Add selected videos counter and button
+        selected_videos_layout = QHBoxLayout()
+        self.selected_videos_label = QLabel("Selected: 0 videos")
+        self.selected_videos_label.setStyleSheet("color: #00ff00; font-weight: bold;")
+        selected_videos_layout.addWidget(self.selected_videos_label)
+
+        btn_add_selected_videos = RoundedButton("➕ Add Selected Videos")
+        btn_add_selected_videos.clicked.connect(self.add_selected_videos_to_playlist)
+        selected_videos_layout.addWidget(btn_add_selected_videos)
+
+        playlist_btn_layout.addLayout(selected_videos_layout)
+
+        btn_add_to_playlist = RoundedButton("➕ Add from Dropdown")
         btn_add_to_playlist.clicked.connect(self.add_to_playlist)
         playlist_btn_layout.addWidget(btn_add_to_playlist)
 
@@ -1261,8 +1274,22 @@ class SlideshowManager(QMainWindow):
     def _update_thumbnail_border(self, btn, index):
         """Update thumbnail border color based on selection state."""
         is_selected = index in self.selected_images
-        border_color = "#00ff00" if is_selected else "#3d3d3d"  # Green if selected, gray if not
-        border_width = "4px" if is_selected else "2px"
+
+        # Check if it's a video selected for playlist
+        is_video_selected_for_playlist = False
+        if hasattr(btn, 'img_path'):
+            is_video_selected_for_playlist = str(btn.img_path) in self.selected_videos_for_playlist
+
+        # Use brighter green for videos selected for playlist
+        if is_video_selected_for_playlist:
+            border_color = "#00ff00"  # Bright green for playlist selection
+            border_width = "4px"
+        elif is_selected:
+            border_color = "#00ff00"  # Green for regular selection
+            border_width = "4px"
+        else:
+            border_color = "#3d3d3d"  # Gray if not selected
+            border_width = "2px"
 
         btn.setStyleSheet(f"""
             QPushButton {{
@@ -1272,7 +1299,7 @@ class SlideshowManager(QMainWindow):
                 background-color: #2b2b2b;
             }}
             QPushButton:hover {{
-                border: {border_width} solid #00ff00;
+                border: 4px solid #4a9eff;
             }}
         """)
 
@@ -1283,6 +1310,10 @@ class SlideshowManager(QMainWindow):
         if modifiers == Qt.ControlModifier:
             # Ctrl+Click: Toggle selection
             self.toggle_image_selection(index, None)
+
+            # If it's a video, also add to selected videos for playlist
+            if img_path.suffix.lower() in VIDEO_FORMATS:
+                self.toggle_video_selection_for_playlist(img_path)
         else:
             # Regular click on video: Play it
             if img_path.suffix.lower() in VIDEO_FORMATS:
@@ -1290,6 +1321,51 @@ class SlideshowManager(QMainWindow):
             else:
                 # For images, just toggle selection
                 self.toggle_image_selection(index, None)
+
+    def on_video_grid_thumbnail_clicked(self, video_path):
+        """Handle video grid thumbnail click - play or select based on modifiers."""
+        modifiers = QApplication.keyboardModifiers()
+        if modifiers == Qt.ControlModifier:
+            # Ctrl+Click: Toggle selection for playlist
+            self.toggle_video_selection_for_playlist(video_path)
+        else:
+            # Regular click: Play video
+            self.play_video_from_thumbnail(video_path)
+
+    def toggle_video_selection_for_playlist(self, video_path):
+        """Toggle video selection for playlist."""
+        video_path_str = str(video_path)
+
+        if video_path_str in self.selected_videos_for_playlist:
+            self.selected_videos_for_playlist.discard(video_path_str)
+            logger.info(f"Deselected video for playlist: {video_path.name}")
+            self.log_event(f"☐ Deselected: {video_path.name}")
+        else:
+            self.selected_videos_for_playlist.add(video_path_str)
+            logger.info(f"Selected video for playlist: {video_path.name}")
+            self.log_event(f"☑️ Selected: {video_path.name}")
+
+        # Update the selected videos counter
+        self.update_selected_videos_counter()
+
+        # Refresh the video grid to update visual feedback (if visible)
+        if self.player_stack.currentIndex() == 1:
+            self.show_video_grid()
+
+        # Also update main gallery thumbnails
+        if hasattr(self, 'thumbnails_layout'):
+            for i in range(self.thumbnails_layout.count()):
+                widget = self.thumbnails_layout.itemAt(i).widget()
+                if isinstance(widget, QPushButton) and hasattr(widget, 'img_path'):
+                    if str(widget.img_path) == video_path_str:
+                        self._update_thumbnail_border(widget, widget.index)
+                        break
+
+    def update_selected_videos_counter(self):
+        """Update the selected videos counter label."""
+        count = len(self.selected_videos_for_playlist)
+        self.selected_videos_label.setText(f"Selected: {count} video{'s' if count != 1 else ''}")
+        logger.debug(f"Selected videos count: {count}")
 
     def play_video_from_thumbnail(self, video_path):
         """Play a video directly from thumbnail click."""
@@ -1483,18 +1559,25 @@ class SlideshowManager(QMainWindow):
                 btn = QPushButton()
                 btn.setFixedSize(150, 150)
                 btn.setCursor(Qt.PointingHandCursor)
-                btn.setStyleSheet("""
-                    QPushButton {
+                btn.video_path = video_path  # Store video path for later reference
+
+                # Check if this video is selected
+                is_selected = str(video_path) in self.selected_videos_for_playlist
+                border_color = "#00ff00" if is_selected else "#3a3a3a"
+                border_width = "4px" if is_selected else "2px"
+
+                btn.setStyleSheet(f"""
+                    QPushButton {{
                         background-color: #2a2a2a;
-                        border: 2px solid #3a3a3a;
+                        border: {border_width} solid {border_color};
                         border-radius: 8px;
                         color: white;
                         font-size: 14px;
-                    }
-                    QPushButton:hover {
-                        border: 2px solid #4a9eff;
+                    }}
+                    QPushButton:hover {{
+                        border: 4px solid #4a9eff;
                         background-color: #3a3a3a;
-                    }
+                    }}
                 """)
 
                 # Set thumbnail or placeholder
@@ -1510,13 +1593,13 @@ class SlideshowManager(QMainWindow):
                 # Set tooltip
                 try:
                     file_size = video_path.stat().st_size / (1024 * 1024)
-                    tooltip = f"{video_path.name}\nSize: {file_size:.1f} MB\n\nClick to play"
+                    tooltip = f"{video_path.name}\nSize: {file_size:.1f} MB\n\nClick to play\nCtrl+Click to select for playlist"
                     btn.setToolTip(tooltip)
                 except:
-                    btn.setToolTip(f"{video_path.name}\n\nClick to play")
+                    btn.setToolTip(f"{video_path.name}\n\nClick to play\nCtrl+Click to select")
 
-                # Connect click to play video
-                btn.clicked.connect(lambda checked, vp=video_path: self.play_video_from_thumbnail(vp))
+                # Connect click to handle both play and selection
+                btn.clicked.connect(lambda checked, vp=video_path: self.on_video_grid_thumbnail_clicked(vp))
 
                 self.video_grid_layout.addWidget(btn, row, col)
 
@@ -1541,8 +1624,54 @@ class SlideshowManager(QMainWindow):
             seconds = estimated_duration % 60
             self.playlist_count_label.setText(f"({count} items, ~{minutes}m{seconds}s)")
 
+    def add_selected_videos_to_playlist(self):
+        """Add all selected videos to playlist."""
+        if not self.selected_videos_for_playlist:
+            QMessageBox.information(self, "Info", "No videos selected.\n\nCtrl+Click on video thumbnails to select them.")
+            self.log_event("❌ No videos selected")
+            return
+
+        added_count = 0
+        duplicate_count = 0
+
+        for video_path_str in list(self.selected_videos_for_playlist):
+            video_path = Path(video_path_str)
+
+            # Validate file exists
+            if not video_path.exists():
+                self.log_event(f"❌ Video file not found: {video_path.name}")
+                continue
+
+            # Check for duplicates
+            if video_path_str in self.current_playlist:
+                duplicate_count += 1
+                continue
+
+            # Add to playlist
+            self.current_playlist.append(video_path_str)
+            self.playlist_widget.addItem(video_path.name)
+            added_count += 1
+            logger.info(f"Added to playlist: {video_path.name}")
+
+        # Clear selection after adding
+        self.selected_videos_for_playlist.clear()
+        self.update_selected_videos_counter()
+        self.update_playlist_count()
+
+        # Show summary
+        message = f"✅ Added {added_count} video{'s' if added_count != 1 else ''} to playlist"
+        if duplicate_count > 0:
+            message += f"\n⚠️ Skipped {duplicate_count} duplicate{'s' if duplicate_count != 1 else ''}"
+
+        self.log_event(message)
+        QMessageBox.information(self, "Success", message)
+
+        # Refresh video grid to clear visual selection
+        if self.player_stack.currentIndex() == 1:  # If grid is visible
+            self.show_video_grid()
+
     def add_to_playlist(self):
-        """Add selected video to playlist."""
+        """Add selected video from dropdown to playlist."""
         if not self.available_videos or self.video_combo.currentIndex() < 0:
             self.log_event("❌ No video selected")
             return
