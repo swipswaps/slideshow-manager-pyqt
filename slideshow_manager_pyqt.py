@@ -42,9 +42,9 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QPushButton, QLabel, QListWidget, QListWidgetItem, QFileDialog,
                              QDialog, QLineEdit, QComboBox, QSpinBox, QCheckBox, QTabWidget,
                              QScrollArea, QGridLayout, QSplitter, QMessageBox, QInputDialog,
-                             QTextEdit, QPlainTextEdit, QSlider)
-from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer, QRect
-from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor, QPalette, QImage
+                             QTextEdit, QPlainTextEdit, QSlider, QFrame)
+from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer, QRect, QMimeData, QPoint
+from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor, QPalette, QImage, QDrag, QPainter
 from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
 
 from PIL import Image
@@ -283,6 +283,402 @@ class RoundedButton(QPushButton):
         """)
         self.setCursor(Qt.PointingHandCursor)
         self.setFlat(False)
+
+
+class DraggableThumbnail(QPushButton):
+    """Thumbnail button that supports drag-and-drop."""
+
+    def __init__(self, file_path, pixmap=None, parent=None):
+        super().__init__(parent)
+        self.file_path = Path(file_path)
+        self.pixmap = pixmap
+        self.drag_start_position = None
+
+        self.setFixedSize(100, 100)
+        self.setCursor(Qt.OpenHandCursor)
+        self.setAcceptDrops(False)  # Thumbnails don't accept drops, only timeline does
+
+        # Set thumbnail image or placeholder
+        if pixmap:
+            self.setIcon(QIcon(pixmap))
+            self.setIconSize(QSize(90, 90))
+        else:
+            # Placeholder based on file type
+            if self.file_path.suffix.lower() in VIDEO_FORMATS:
+                self.setText("📹")
+            else:
+                self.setText("🖼️")
+
+        # Styling
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: #2a2a2a;
+                border: 2px solid #3d3d3d;
+                border-radius: 8px;
+                color: white;
+                font-size: 32px;
+            }
+            QPushButton:hover {
+                border: 2px solid #4a9eff;
+                background-color: #3a3a3a;
+            }
+        """)
+
+        # Tooltip
+        self.setToolTip(f"{self.file_path.name}\n\nDrag to timeline to add")
+
+    def mousePressEvent(self, event):
+        """Store drag start position."""
+        if event.button() == Qt.LeftButton:
+            self.drag_start_position = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """Start drag operation if mouse moved far enough."""
+        if not (event.buttons() & Qt.LeftButton):
+            return
+        if self.drag_start_position is None:
+            return
+        if (event.pos() - self.drag_start_position).manhattanLength() < QApplication.startDragDistance():
+            return
+
+        # Create drag object
+        drag = QDrag(self)
+        mime_data = QMimeData()
+
+        # Store file path in mime data
+        mime_data.setText(str(self.file_path))
+        mime_data.setData("application/x-slideshow-file", str(self.file_path).encode())
+
+        drag.setMimeData(mime_data)
+
+        # Set drag pixmap (thumbnail preview)
+        if self.pixmap:
+            drag.setPixmap(self.pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            # Create a simple pixmap with text
+            pixmap = QPixmap(80, 80)
+            pixmap.fill(QColor("#2a2a2a"))
+            painter = QPainter(pixmap)
+            painter.setPen(QColor("white"))
+            painter.setFont(QFont("Arial", 24))
+            if self.file_path.suffix.lower() in VIDEO_FORMATS:
+                painter.drawText(pixmap.rect(), Qt.AlignCenter, "📹")
+            else:
+                painter.drawText(pixmap.rect(), Qt.AlignCenter, "🖼️")
+            painter.end()
+            drag.setPixmap(pixmap)
+
+        drag.setHotSpot(QPoint(40, 40))
+
+        # Execute drag
+        drag.exec_(Qt.CopyAction | Qt.MoveAction)
+        self.setCursor(Qt.OpenHandCursor)
+
+    def mouseReleaseEvent(self, event):
+        """Reset cursor on release."""
+        self.setCursor(Qt.OpenHandCursor)
+        super().mouseReleaseEvent(event)
+
+
+class TimelineThumbnail(QPushButton):
+    """Thumbnail in timeline that can be reordered and removed."""
+
+    removed = pyqtSignal(object)  # Signal emitted when thumbnail is removed
+
+    def __init__(self, file_path, pixmap=None, parent=None):
+        super().__init__(parent)
+        self.file_path = Path(file_path)
+        self.pixmap = pixmap
+        self.drag_start_position = None
+
+        self.setFixedSize(80, 80)
+        self.setCursor(Qt.OpenHandCursor)
+
+        # Set thumbnail image or placeholder
+        if pixmap:
+            self.setIcon(QIcon(pixmap))
+            self.setIconSize(QSize(70, 70))
+        else:
+            if self.file_path.suffix.lower() in VIDEO_FORMATS:
+                self.setText("📹")
+            else:
+                self.setText("🖼️")
+
+        # Styling with remove button overlay
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: #2a2a2a;
+                border: 2px solid #00ff00;
+                border-radius: 6px;
+                color: white;
+                font-size: 24px;
+            }
+            QPushButton:hover {
+                border: 2px solid #4a9eff;
+                background-color: #3a3a3a;
+            }
+        """)
+
+        # Tooltip
+        self.setToolTip(f"{self.file_path.name}\n\nDrag to reorder\nRight-click to remove")
+
+        # Context menu for removal
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.show_context_menu)
+
+    def show_context_menu(self, pos):
+        """Show context menu for removal."""
+        from PyQt5.QtWidgets import QMenu
+        menu = QMenu(self)
+        remove_action = menu.addAction("❌ Remove from Timeline")
+        action = menu.exec_(self.mapToGlobal(pos))
+        if action == remove_action:
+            self.removed.emit(self)
+
+    def mousePressEvent(self, event):
+        """Store drag start position."""
+        if event.button() == Qt.LeftButton:
+            self.drag_start_position = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """Start drag operation for reordering."""
+        if not (event.buttons() & Qt.LeftButton):
+            return
+        if self.drag_start_position is None:
+            return
+        if (event.pos() - self.drag_start_position).manhattanLength() < QApplication.startDragDistance():
+            return
+
+        # Create drag object
+        drag = QDrag(self)
+        mime_data = QMimeData()
+
+        # Store file path and mark as timeline reorder
+        mime_data.setText(str(self.file_path))
+        mime_data.setData("application/x-timeline-reorder", str(self.file_path).encode())
+
+        drag.setMimeData(mime_data)
+
+        # Set drag pixmap
+        if self.pixmap:
+            drag.setPixmap(self.pixmap.scaled(60, 60, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+        drag.setHotSpot(QPoint(30, 30))
+
+        # Execute drag
+        result = drag.exec_(Qt.MoveAction)
+        self.setCursor(Qt.OpenHandCursor)
+
+        # If drag was successful (moved), remove this thumbnail
+        if result == Qt.MoveAction:
+            self.removed.emit(self)
+
+    def mouseReleaseEvent(self, event):
+        """Reset cursor on release."""
+        self.setCursor(Qt.OpenHandCursor)
+        super().mouseReleaseEvent(event)
+
+
+class TimelineWidget(QFrame):
+    """Timeline widget that accepts dropped thumbnails and displays them in sequence."""
+
+    timeline_changed = pyqtSignal(list)  # Signal emitted when timeline changes
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.timeline_items = []  # List of file paths in order
+        self.thumbnail_widgets = []  # List of TimelineThumbnail widgets
+
+        self.setAcceptDrops(True)
+        self.setMinimumHeight(120)
+        self.setMaximumHeight(120)
+
+        # Styling
+        self.setStyleSheet("""
+            QFrame {
+                background-color: #1a1a1a;
+                border: 2px dashed #3d3d3d;
+                border-radius: 8px;
+            }
+        """)
+
+        # Layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(5, 5, 5, 5)
+
+        # Scroll area for thumbnails
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
+
+        # Container for thumbnails
+        self.timeline_container = QWidget()
+        self.timeline_layout = QHBoxLayout(self.timeline_container)
+        self.timeline_layout.setSpacing(5)
+        self.timeline_layout.setContentsMargins(5, 5, 5, 5)
+        self.timeline_layout.addStretch()
+
+        scroll.setWidget(self.timeline_container)
+        main_layout.addWidget(scroll)
+
+        # Empty state label
+        self.empty_label = QLabel("📽️ Drag thumbnails here to build your timeline")
+        self.empty_label.setAlignment(Qt.AlignCenter)
+        self.empty_label.setStyleSheet("color: #666; font-size: 14px; font-weight: bold;")
+        main_layout.addWidget(self.empty_label)
+
+        self.update_empty_state()
+
+    def update_empty_state(self):
+        """Show/hide empty state label."""
+        is_empty = len(self.timeline_items) == 0
+        self.empty_label.setVisible(is_empty)
+        if is_empty:
+            self.setStyleSheet("""
+                QFrame {
+                    background-color: #1a1a1a;
+                    border: 2px dashed #3d3d3d;
+                    border-radius: 8px;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QFrame {
+                    background-color: #1a1a1a;
+                    border: 2px solid #00ff00;
+                    border-radius: 8px;
+                }
+            """)
+
+    def dragEnterEvent(self, event):
+        """Accept drag events with file data."""
+        if event.mimeData().hasFormat("application/x-slideshow-file") or \
+           event.mimeData().hasFormat("application/x-timeline-reorder"):
+            event.acceptProposedAction()
+            self.setStyleSheet("""
+                QFrame {
+                    background-color: #2a3a2a;
+                    border: 2px solid #00ff00;
+                    border-radius: 8px;
+                }
+            """)
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        """Reset styling when drag leaves."""
+        self.update_empty_state()
+
+    def dropEvent(self, event):
+        """Handle dropped files."""
+        if event.mimeData().hasFormat("application/x-slideshow-file"):
+            # New file dropped from gallery
+            file_path = event.mimeData().text()
+            self.add_item(file_path)
+            event.acceptProposedAction()
+        elif event.mimeData().hasFormat("application/x-timeline-reorder"):
+            # Reordering within timeline
+            file_path = event.mimeData().text()
+            # Find drop position
+            drop_pos = event.pos()
+            insert_index = self.get_insert_index(drop_pos)
+            self.reorder_item(file_path, insert_index)
+            event.acceptProposedAction()
+
+        self.update_empty_state()
+
+    def get_insert_index(self, pos):
+        """Get the index where item should be inserted based on drop position."""
+        # Find which thumbnail the drop is closest to
+        for i, widget in enumerate(self.thumbnail_widgets):
+            widget_pos = widget.mapTo(self, QPoint(0, 0))
+            widget_center = widget_pos.x() + widget.width() // 2
+            if pos.x() < widget_center:
+                return i
+        return len(self.thumbnail_widgets)
+
+    def add_item(self, file_path, pixmap=None):
+        """Add item to timeline."""
+        file_path = Path(file_path)
+
+        # Avoid duplicates
+        if str(file_path) in [str(p) for p in self.timeline_items]:
+            logger.debug(f"Item already in timeline: {file_path.name}")
+            return
+
+        self.timeline_items.append(file_path)
+
+        # Create thumbnail widget
+        thumbnail = TimelineThumbnail(file_path, pixmap)
+        thumbnail.removed.connect(self.remove_thumbnail)
+        self.thumbnail_widgets.append(thumbnail)
+
+        # Insert before stretch
+        self.timeline_layout.insertWidget(len(self.thumbnail_widgets) - 1, thumbnail)
+
+        self.update_empty_state()
+        self.timeline_changed.emit(self.timeline_items)
+        logger.info(f"Added to timeline: {file_path.name}")
+
+    def remove_thumbnail(self, thumbnail):
+        """Remove thumbnail from timeline."""
+        if thumbnail in self.thumbnail_widgets:
+            index = self.thumbnail_widgets.index(thumbnail)
+            self.thumbnail_widgets.remove(thumbnail)
+            self.timeline_items.pop(index)
+            thumbnail.deleteLater()
+            self.update_empty_state()
+            self.timeline_changed.emit(self.timeline_items)
+            logger.info(f"Removed from timeline: {thumbnail.file_path.name}")
+
+    def reorder_item(self, file_path, new_index):
+        """Reorder item in timeline."""
+        file_path = Path(file_path)
+
+        # Find current index
+        try:
+            old_index = [str(p) for p in self.timeline_items].index(str(file_path))
+        except ValueError:
+            return
+
+        # Remove from old position
+        self.timeline_items.pop(old_index)
+        old_widget = self.thumbnail_widgets.pop(old_index)
+        self.timeline_layout.removeWidget(old_widget)
+
+        # Insert at new position
+        new_index = min(new_index, len(self.timeline_items))
+        self.timeline_items.insert(new_index, file_path)
+        self.thumbnail_widgets.insert(new_index, old_widget)
+        self.timeline_layout.insertWidget(new_index, old_widget)
+
+        self.timeline_changed.emit(self.timeline_items)
+        logger.info(f"Reordered in timeline: {file_path.name} to position {new_index}")
+
+    def clear(self):
+        """Clear all items from timeline."""
+        for widget in self.thumbnail_widgets:
+            widget.deleteLater()
+        self.thumbnail_widgets.clear()
+        self.timeline_items.clear()
+        self.update_empty_state()
+        self.timeline_changed.emit(self.timeline_items)
+        logger.info("Timeline cleared")
+
+    def set_items(self, file_paths, thumbnail_cache=None):
+        """Set timeline items from list of file paths."""
+        self.clear()
+        for file_path in file_paths:
+            pixmap = None
+            if thumbnail_cache and Path(file_path) in thumbnail_cache:
+                pixmap = thumbnail_cache[Path(file_path)]
+            self.add_item(file_path, pixmap)
 
 
 class PlaylistExportDialog(QDialog):
@@ -774,6 +1170,34 @@ class SlideshowManager(QMainWindow):
 
         left_layout.addWidget(self.player_stack, 1)
 
+        # Timeline widget
+        timeline_header = QLabel("🎞️ Timeline (Drag & Drop)")
+        timeline_header.setFont(QFont("Arial", 10, QFont.Bold))
+        timeline_header.setStyleSheet("color: #00ff00; margin-top: 5px;")
+        left_layout.addWidget(timeline_header)
+
+        self.timeline_widget = TimelineWidget()
+        self.timeline_widget.timeline_changed.connect(self.on_timeline_changed)
+        left_layout.addWidget(self.timeline_widget)
+
+        # Timeline control buttons
+        timeline_controls = QHBoxLayout()
+
+        btn_timeline_play = RoundedButton("▶️ Play Timeline")
+        btn_timeline_play.clicked.connect(self.play_timeline)
+        timeline_controls.addWidget(btn_timeline_play)
+
+        btn_timeline_export = RoundedButton("📤 Export Timeline")
+        btn_timeline_export.clicked.connect(self.export_timeline_ffmpeg)
+        timeline_controls.addWidget(btn_timeline_export)
+
+        btn_timeline_clear = RoundedButton("🗑️ Clear Timeline")
+        btn_timeline_clear.clicked.connect(self.clear_timeline)
+        timeline_controls.addWidget(btn_timeline_clear)
+
+        timeline_controls.addStretch()
+        left_layout.addLayout(timeline_controls)
+
         # Control buttons
         controls_layout = QHBoxLayout()
 
@@ -1126,13 +1550,14 @@ class SlideshowManager(QMainWindow):
         self.thumbnail_loader_thread.start()
 
     def _create_placeholder_thumbnail(self, index, img_path):
-        """Create a fast placeholder thumbnail."""
+        """Create a fast placeholder thumbnail with drag support."""
         btn = QPushButton()
         btn.setFixedSize(130, 130)
         btn.setCursor(Qt.PointingHandCursor)
         btn.setFlat(True)
         btn.index = index
         btn.img_path = img_path
+        btn.drag_start_position = None
 
         # Different behavior for videos vs images
         is_video = img_path.suffix.lower() in VIDEO_FORMATS
@@ -1142,6 +1567,11 @@ class SlideshowManager(QMainWindow):
         else:
             # Images: Click toggles selection
             btn.clicked.connect(lambda: self.toggle_image_selection(index, None))
+
+        # Enable drag-and-drop for timeline
+        btn.mousePressEvent = lambda event: self._thumbnail_mouse_press(btn, event)
+        btn.mouseMoveEvent = lambda event: self._thumbnail_mouse_move(btn, event)
+        btn.mouseReleaseEvent = lambda event: self._thumbnail_mouse_release(btn, event)
 
         # Set placeholder text
         btn.setText("📹" if is_video else "🖼️")
@@ -1302,6 +1732,59 @@ class SlideshowManager(QMainWindow):
                 border: 4px solid #4a9eff;
             }}
         """)
+
+    def _thumbnail_mouse_press(self, btn, event):
+        """Handle mouse press on thumbnail for drag-and-drop."""
+        if event.button() == Qt.LeftButton:
+            btn.drag_start_position = event.pos()
+        QPushButton.mousePressEvent(btn, event)
+
+    def _thumbnail_mouse_move(self, btn, event):
+        """Handle mouse move on thumbnail to start drag."""
+        if not (event.buttons() & Qt.LeftButton):
+            return
+        if not hasattr(btn, 'drag_start_position') or btn.drag_start_position is None:
+            return
+        if (event.pos() - btn.drag_start_position).manhattanLength() < QApplication.startDragDistance():
+            return
+
+        # Start drag operation
+        drag = QDrag(btn)
+        mime_data = QMimeData()
+
+        # Store file path
+        mime_data.setText(str(btn.img_path))
+        mime_data.setData("application/x-slideshow-file", str(btn.img_path).encode())
+
+        drag.setMimeData(mime_data)
+
+        # Set drag pixmap (thumbnail preview)
+        if hasattr(btn, 'icon') and not btn.icon().isNull():
+            pixmap = btn.icon().pixmap(80, 80)
+            drag.setPixmap(pixmap)
+        elif btn.img_path in self.thumbnail_cache:
+            pixmap = self.thumbnail_cache[btn.img_path]
+            drag.setPixmap(pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            # Create simple pixmap
+            pixmap = QPixmap(80, 80)
+            pixmap.fill(QColor("#2a2a2a"))
+            painter = QPainter(pixmap)
+            painter.setPen(QColor("white"))
+            painter.setFont(QFont("Arial", 32))
+            is_video = btn.img_path.suffix.lower() in VIDEO_FORMATS
+            painter.drawText(pixmap.rect(), Qt.AlignCenter, "📹" if is_video else "🖼️")
+            painter.end()
+            drag.setPixmap(pixmap)
+
+        drag.setHotSpot(QPoint(40, 40))
+
+        # Execute drag
+        drag.exec_(Qt.CopyAction)
+
+    def _thumbnail_mouse_release(self, btn, event):
+        """Handle mouse release on thumbnail."""
+        QPushButton.mouseReleaseEvent(btn, event)
 
     def on_thumbnail_clicked(self, index, img_path):
         """Handle thumbnail click - play video or toggle selection based on modifiers."""
@@ -1555,11 +2038,13 @@ class SlideshowManager(QMainWindow):
                 row = i // 4
                 col = i % 4
 
-                # Create button
+                # Create button with drag support
                 btn = QPushButton()
                 btn.setFixedSize(150, 150)
                 btn.setCursor(Qt.PointingHandCursor)
                 btn.video_path = video_path  # Store video path for later reference
+                btn.drag_start_position = None
+                btn.img_path = video_path  # For consistency with main gallery
 
                 # Check if this video is selected
                 is_selected = str(video_path) in self.selected_videos_for_playlist
@@ -1593,13 +2078,18 @@ class SlideshowManager(QMainWindow):
                 # Set tooltip
                 try:
                     file_size = video_path.stat().st_size / (1024 * 1024)
-                    tooltip = f"{video_path.name}\nSize: {file_size:.1f} MB\n\nClick to play\nCtrl+Click to select for playlist"
+                    tooltip = f"{video_path.name}\nSize: {file_size:.1f} MB\n\nClick to play\nCtrl+Click to select\nDrag to timeline"
                     btn.setToolTip(tooltip)
                 except:
-                    btn.setToolTip(f"{video_path.name}\n\nClick to play\nCtrl+Click to select")
+                    btn.setToolTip(f"{video_path.name}\n\nClick to play\nCtrl+Click to select\nDrag to timeline")
 
                 # Connect click to handle both play and selection
                 btn.clicked.connect(lambda checked, vp=video_path: self.on_video_grid_thumbnail_clicked(vp))
+
+                # Enable drag-and-drop
+                btn.mousePressEvent = lambda event, b=btn: self._thumbnail_mouse_press(b, event)
+                btn.mouseMoveEvent = lambda event, b=btn: self._thumbnail_mouse_move(b, event)
+                btn.mouseReleaseEvent = lambda event, b=btn: self._thumbnail_mouse_release(b, event)
 
                 self.video_grid_layout.addWidget(btn, row, col)
 
@@ -1653,6 +2143,13 @@ class SlideshowManager(QMainWindow):
             added_count += 1
             logger.info(f"Added to playlist: {video_path.name}")
 
+        # Update timeline with all added videos
+        for video_path_str in self.current_playlist:
+            video_path = Path(video_path_str)
+            pixmap = self.thumbnail_cache.get(video_path)
+            if str(video_path) not in [str(p) for p in self.timeline_widget.timeline_items]:
+                self.timeline_widget.add_item(video_path_str, pixmap)
+
         # Clear selection after adding
         self.selected_videos_for_playlist.clear()
         self.update_selected_videos_counter()
@@ -1699,6 +2196,11 @@ class SlideshowManager(QMainWindow):
         # Update playlist widget
         self.playlist_widget.addItem(video_path.name)
         self.update_playlist_count()
+
+        # Update timeline
+        pixmap = self.thumbnail_cache.get(video_path)
+        self.timeline_widget.add_item(str(video_path), pixmap)
+
         self.log_event(f"➕ Added to playlist: {video_path.name}")
         logger.info(f"Added to playlist: {video_path.name}")
 
@@ -1762,6 +2264,7 @@ class SlideshowManager(QMainWindow):
         if reply == QMessageBox.Yes:
             self.current_playlist.clear()
             self.playlist_widget.clear()
+            self.timeline_widget.clear()
             self.update_playlist_count()
             self.log_event("🗑️ Playlist cleared")
             logger.info("Playlist cleared")
@@ -1807,6 +2310,62 @@ class SlideshowManager(QMainWindow):
                 self.db.save_playlist(name, self.current_playlist, description)
                 QMessageBox.information(self, "Success", f"Playlist '{name}' saved!")
                 self.log_event(f"💾 Saved playlist: {name}")
+
+    def on_timeline_changed(self, file_paths):
+        """Handle timeline changes and sync with playlist."""
+        # Update playlist to match timeline
+        self.current_playlist = [str(p) for p in file_paths]
+
+        # Update playlist widget
+        self.playlist_widget.clear()
+        for path in self.current_playlist:
+            item = QListWidgetItem(Path(path).name)
+            self.playlist_widget.addItem(item)
+
+        self.update_playlist_count()
+        logger.info(f"Timeline changed: {len(file_paths)} items")
+        self.log_event(f"🎞️ Timeline updated: {len(file_paths)} items")
+
+    def play_timeline(self):
+        """Play all videos in timeline sequentially."""
+        if not self.timeline_widget.timeline_items:
+            self.log_event("❌ Timeline is empty")
+            QMessageBox.warning(self, "Warning", "Timeline is empty")
+            return
+
+        # Sync timeline to playlist and play
+        self.current_playlist = [str(p) for p in self.timeline_widget.timeline_items]
+        self.play_playlist()
+        self.log_event(f"▶️ Playing timeline ({len(self.timeline_widget.timeline_items)} items)")
+
+    def export_timeline_ffmpeg(self):
+        """Export timeline as FFmpeg concatenation script."""
+        if not self.timeline_widget.timeline_items:
+            self.log_event("❌ Timeline is empty")
+            QMessageBox.warning(self, "Warning", "Timeline is empty")
+            return
+
+        # Sync timeline to playlist and export
+        self.current_playlist = [str(p) for p in self.timeline_widget.timeline_items]
+        self.export_playlist_ffmpeg()
+        self.log_event(f"📤 Exporting timeline ({len(self.timeline_widget.timeline_items)} items)")
+
+    def clear_timeline(self):
+        """Clear the timeline."""
+        if not self.timeline_widget.timeline_items:
+            return
+
+        # Confirm before clearing
+        reply = QMessageBox.question(
+            self, "Confirm Clear",
+            f"Clear all {len(self.timeline_widget.timeline_items)} items from timeline?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            self.timeline_widget.clear()
+            self.log_event("🗑️ Timeline cleared")
+            logger.info("Timeline cleared")
 
     def load_playlist_dialog(self):
         """Show dialog to load a saved playlist."""
