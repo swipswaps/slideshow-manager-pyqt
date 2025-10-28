@@ -1111,25 +1111,28 @@ class SlideshowManager(QMainWindow):
     
     def create_video_panel(self):
         """Create video player panel with embedded VLC and playlist functionality."""
-        # Create scroll area wrapper for the entire panel
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll_area.setStyleSheet("QScrollArea { border: none; background-color: #1e1e1e; }")
+        # Create main vertical splitter for player and playlist (THIRD RESIZE HANDLE)
+        main_splitter = QSplitter(Qt.Vertical)
+        main_splitter.setHandleWidth(6)
+        main_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: #3d3d3d;
+                border: 1px solid #555;
+            }
+            QSplitter::handle:hover {
+                background-color: #0d7377;
+            }
+        """)
 
-        panel = QWidget()
-        panel.setMinimumHeight(400)  # Ensure panel has minimum height for controls
-        main_layout = QHBoxLayout()
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(8)
-
-        # Left side: Player
-        left_layout = QVBoxLayout()
+        # Top section: Player and Timeline
+        top_widget = QWidget()
+        top_layout = QVBoxLayout()
+        top_layout.setContentsMargins(8, 8, 8, 8)
+        top_layout.setSpacing(8)
 
         # Header with title and video selector
         header_layout = QHBoxLayout()
-        label = QLabel("🎬 Video Player & Playlist")
+        label = QLabel("🎬 Video Player")
         label.setFont(QFont("Arial", 11, QFont.Bold))
         header_layout.addWidget(label)
         header_layout.addStretch()
@@ -1140,7 +1143,7 @@ class SlideshowManager(QMainWindow):
         self.video_combo.currentIndexChanged.connect(self.on_video_selected)
         header_layout.addWidget(self.video_combo)
 
-        left_layout.addLayout(header_layout)
+        top_layout.addLayout(header_layout)
 
         # VLC player widget - FIXED: Use media_player_new() instead of media_list_player_new()
         self.vlc_instance = vlc.Instance()
@@ -1183,37 +1186,19 @@ class SlideshowManager(QMainWindow):
         # Start with VLC player visible
         self.player_stack.setCurrentIndex(0)
 
-        left_layout.addWidget(self.player_stack, 1)
+        top_layout.addWidget(self.player_stack, 1)
 
         # Timeline widget
         timeline_header = QLabel("🎞️ Timeline (Drag & Drop)")
         timeline_header.setFont(QFont("Arial", 10, QFont.Bold))
         timeline_header.setStyleSheet("color: #00ff00; margin-top: 5px;")
-        left_layout.addWidget(timeline_header)
+        top_layout.addWidget(timeline_header)
 
         self.timeline_widget = TimelineWidget()
         self.timeline_widget.timeline_changed.connect(self.on_timeline_changed)
-        left_layout.addWidget(self.timeline_widget)
+        top_layout.addWidget(self.timeline_widget)
 
-        # Timeline control buttons
-        timeline_controls = QHBoxLayout()
-
-        btn_timeline_play = RoundedButton("▶️ Play Timeline")
-        btn_timeline_play.clicked.connect(self.play_timeline)
-        timeline_controls.addWidget(btn_timeline_play)
-
-        btn_timeline_export = RoundedButton("📤 Export Timeline")
-        btn_timeline_export.clicked.connect(self.export_timeline_ffmpeg)
-        timeline_controls.addWidget(btn_timeline_export)
-
-        btn_timeline_clear = RoundedButton("🗑️ Clear Timeline")
-        btn_timeline_clear.clicked.connect(self.clear_timeline)
-        timeline_controls.addWidget(btn_timeline_clear)
-
-        timeline_controls.addStretch()
-        left_layout.addLayout(timeline_controls)
-
-        # Control buttons
+        # Simplified control buttons
         controls_layout = QHBoxLayout()
 
         self.btn_play_pause = RoundedButton("▶️ Play")
@@ -1224,18 +1209,32 @@ class SlideshowManager(QMainWindow):
         btn_stop.clicked.connect(self.vlc_stop)
         controls_layout.addWidget(btn_stop)
 
+        btn_play_timeline = RoundedButton("▶️ Play Timeline")
+        btn_play_timeline.clicked.connect(self.play_timeline)
+        controls_layout.addWidget(btn_play_timeline)
+
         controls_layout.addStretch()
 
-        btn_folder = RoundedButton("📁 Open Folder")
-        btn_folder.clicked.connect(self.open_videos_folder)
-        controls_layout.addWidget(btn_folder)
+        btn_export = RoundedButton("📤 Export")
+        btn_export.clicked.connect(self.export_timeline_ffmpeg)
+        controls_layout.addWidget(btn_export)
 
-        left_layout.addLayout(controls_layout)
+        btn_clear = RoundedButton("🗑️ Clear")
+        btn_clear.clicked.connect(self.clear_timeline)
+        controls_layout.addWidget(btn_clear)
 
-        # Right side: Playlist Manager
-        right_layout = QVBoxLayout()
+        top_layout.addLayout(controls_layout)
 
-        # Playlist header with count
+        top_widget.setLayout(top_layout)
+        main_splitter.addWidget(top_widget)
+
+        # Bottom section: Playlist Manager
+        bottom_widget = QWidget()
+        bottom_layout = QVBoxLayout()
+        bottom_layout.setContentsMargins(8, 8, 8, 8)
+        bottom_layout.setSpacing(8)
+
+        # Playlist header with count and selected videos
         playlist_header_layout = QHBoxLayout()
         playlist_label = QLabel("📋 Playlist")
         playlist_label.setFont(QFont("Arial", 10, QFont.Bold))
@@ -1244,13 +1243,17 @@ class SlideshowManager(QMainWindow):
         self.playlist_count_label = QLabel("(0 items)")
         self.playlist_count_label.setStyleSheet("color: #888;")
         playlist_header_layout.addWidget(self.playlist_count_label)
+
         playlist_header_layout.addStretch()
 
-        right_layout.addLayout(playlist_header_layout)
+        self.selected_videos_label = QLabel("Selected: 0 videos")
+        self.selected_videos_label.setStyleSheet("color: #00ff00; font-weight: bold;")
+        playlist_header_layout.addWidget(self.selected_videos_label)
+
+        bottom_layout.addLayout(playlist_header_layout)
 
         # Playlist list widget
         self.playlist_widget = QListWidget()
-        self.playlist_widget.setMaximumWidth(300)
         self.playlist_widget.setStyleSheet("""
             QListWidget {
                 background-color: #2a2a2a;
@@ -1266,79 +1269,53 @@ class SlideshowManager(QMainWindow):
                 background-color: #0d7377;
             }
         """)
-
-        # Add keyboard shortcuts tooltip
         self.playlist_widget.setToolTip(
             "Keyboard shortcuts:\n"
             "Delete - Remove selected item\n"
             "Ctrl+Up - Move item up\n"
             "Ctrl+Down - Move item down"
         )
+        bottom_layout.addWidget(self.playlist_widget)
 
-        right_layout.addWidget(self.playlist_widget)
+        # Simplified playlist control buttons
+        playlist_btn_layout = QHBoxLayout()
 
-        # Playlist control buttons
-        playlist_btn_layout = QVBoxLayout()
+        btn_add_selected = RoundedButton("➕ Add Selected")
+        btn_add_selected.clicked.connect(self.add_selected_videos_to_playlist)
+        playlist_btn_layout.addWidget(btn_add_selected)
 
-        # Add selected videos counter and button
-        selected_videos_layout = QHBoxLayout()
-        self.selected_videos_label = QLabel("Selected: 0 videos")
-        self.selected_videos_label.setStyleSheet("color: #00ff00; font-weight: bold;")
-        selected_videos_layout.addWidget(self.selected_videos_label)
+        btn_remove = RoundedButton("➖ Remove")
+        btn_remove.clicked.connect(self.remove_from_playlist)
+        playlist_btn_layout.addWidget(btn_remove)
 
-        btn_add_selected_videos = RoundedButton("➕ Add Selected Videos")
-        btn_add_selected_videos.clicked.connect(self.add_selected_videos_to_playlist)
-        selected_videos_layout.addWidget(btn_add_selected_videos)
-
-        playlist_btn_layout.addLayout(selected_videos_layout)
-
-        btn_add_to_playlist = RoundedButton("➕ Add from Dropdown")
-        btn_add_to_playlist.clicked.connect(self.add_to_playlist)
-        playlist_btn_layout.addWidget(btn_add_to_playlist)
-
-        btn_remove_from_playlist = RoundedButton("➖ Remove")
-        btn_remove_from_playlist.clicked.connect(self.remove_from_playlist)
-        playlist_btn_layout.addWidget(btn_remove_from_playlist)
-
-        btn_move_up = RoundedButton("⬆️ Move Up")
+        btn_move_up = RoundedButton("⬆️ Up")
         btn_move_up.clicked.connect(self.move_playlist_up)
         playlist_btn_layout.addWidget(btn_move_up)
 
-        btn_move_down = RoundedButton("⬇️ Move Down")
+        btn_move_down = RoundedButton("⬇️ Down")
         btn_move_down.clicked.connect(self.move_playlist_down)
         playlist_btn_layout.addWidget(btn_move_down)
 
-        btn_clear_playlist = RoundedButton("🗑️ Clear All")
-        btn_clear_playlist.clicked.connect(self.clear_playlist)
-        playlist_btn_layout.addWidget(btn_clear_playlist)
+        playlist_btn_layout.addStretch()
 
-        btn_play_playlist = RoundedButton("▶️ Play Playlist")
-        btn_play_playlist.clicked.connect(self.play_playlist)
-        playlist_btn_layout.addWidget(btn_play_playlist)
+        btn_save = RoundedButton("💾 Save")
+        btn_save.clicked.connect(self.save_playlist_dialog)
+        playlist_btn_layout.addWidget(btn_save)
 
-        btn_save_playlist = RoundedButton("💾 Save Playlist")
-        btn_save_playlist.clicked.connect(self.save_playlist_dialog)
-        playlist_btn_layout.addWidget(btn_save_playlist)
+        btn_load = RoundedButton("📂 Load")
+        btn_load.clicked.connect(self.load_playlist_dialog)
+        playlist_btn_layout.addWidget(btn_load)
 
-        btn_load_playlist = RoundedButton("📂 Load Playlist")
-        btn_load_playlist.clicked.connect(self.load_playlist_dialog)
-        playlist_btn_layout.addWidget(btn_load_playlist)
+        bottom_layout.addLayout(playlist_btn_layout)
 
-        btn_export_concat = RoundedButton("📤 Export FFmpeg")
-        btn_export_concat.clicked.connect(self.export_playlist_ffmpeg)
-        playlist_btn_layout.addWidget(btn_export_concat)
+        bottom_widget.setLayout(bottom_layout)
+        main_splitter.addWidget(bottom_widget)
 
-        right_layout.addLayout(playlist_btn_layout)
+        # Set initial splitter sizes (60% player, 40% playlist)
+        main_splitter.setStretchFactor(0, 3)
+        main_splitter.setStretchFactor(1, 2)
 
-        # Add layouts to main layout
-        main_layout.addLayout(left_layout, 2)
-        main_layout.addLayout(right_layout, 1)
-
-        panel.setLayout(main_layout)
-
-        # Set the panel as the scroll area's widget
-        scroll_area.setWidget(panel)
-        return scroll_area
+        return main_splitter
 
     def create_ffmpeg_panel(self):
         """Create FFmpeg command editor panel."""
@@ -2294,11 +2271,14 @@ class SlideshowManager(QMainWindow):
             return
 
         try:
+            # Show VLC player (hide video grid)
+            self.player_stack.setCurrentIndex(0)
+
             # Create VLC media list for playlist
             media_list = self.vlc_instance.media_list_new()
 
             for video_path in self.current_playlist:
-                media = self.vlc_instance.media_new(video_path)
+                media = self.vlc_instance.media_new(str(video_path))
                 media_list.add_media(media)
 
             # Create media list player if not exists
@@ -2308,6 +2288,9 @@ class SlideshowManager(QMainWindow):
 
             self.playlist_player.set_media_list(media_list)
             self.playlist_player.play()
+
+            # Update button state
+            self.btn_play_pause.setText("⏸️ Pause")
 
             self.log_event(f"▶️ Playing playlist ({len(self.current_playlist)} videos)")
             logger.info(f"Playing playlist with {len(self.current_playlist)} videos")
@@ -2351,10 +2334,23 @@ class SlideshowManager(QMainWindow):
             QMessageBox.warning(self, "Warning", "Timeline is empty")
             return
 
-        # Sync timeline to playlist and play
-        self.current_playlist = [str(p) for p in self.timeline_widget.timeline_items]
-        self.play_playlist()
-        self.log_event(f"▶️ Playing timeline ({len(self.timeline_widget.timeline_items)} items)")
+        try:
+            # Sync timeline to playlist
+            self.current_playlist = [str(p) for p in self.timeline_widget.timeline_items]
+
+            # Update playlist widget to show what's playing
+            self.playlist_widget.clear()
+            for path in self.current_playlist:
+                item = QListWidgetItem(Path(path).name)
+                self.playlist_widget.addItem(item)
+            self.update_playlist_count()
+
+            # Play the playlist
+            self.play_playlist()
+            self.log_event(f"▶️ Playing timeline ({len(self.timeline_widget.timeline_items)} items)")
+        except Exception as e:
+            logger.error(f"Error playing timeline: {e}")
+            self.log_event(f"❌ Error playing timeline: {e}")
 
     def export_timeline_ffmpeg(self):
         """Export timeline as FFmpeg concatenation script."""
