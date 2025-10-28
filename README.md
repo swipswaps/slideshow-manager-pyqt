@@ -10,11 +10,11 @@ Create video slideshows from selected images with real-time progress tracking, v
 ### 2. JSON Editor & Preview (`slideshow_json_editor.py`)
 Create and edit slideshow configurations in JSON format with live preview.
 
-## ✨ Key Features (v2.2)
+## ✨ Key Features (v2.3)
 
 ### Main Application
 
-#### Drag-and-Drop Timeline (NEW in v2.2) 🎞️
+#### Drag-and-Drop Timeline (NEW in v2.2, ENHANCED in v2.3) 🎞️
 - **Visual Timeline Editor**: Drag thumbnails from gallery or video grid to timeline
 - **Reorder by Dragging**: Rearrange timeline items by dragging within timeline
 - **Bidirectional Sync**: Timeline automatically syncs with playlist
@@ -290,6 +290,48 @@ python3 slideshow_json_editor.py
 - Delete database file to reset (loses saved data)
 - Check file permissions
 
+## 🆕 Version History
+
+### v2.3 (Latest) - UI/UX Improvements
+**Fixed:**
+- ✅ Play Timeline button now properly shows VLC player and starts playback
+- ✅ Play Playlist button now correctly initializes VLC player
+- ✅ Added third vertical resize handle between player and playlist sections
+
+**Improved:**
+- 🎨 Decluttered interface with simplified button labels
+- 📐 Better layout organization with top section (player + timeline) and bottom section (playlist)
+- 🎯 Consolidated timeline controls into single row with player controls
+- 🔄 Changed playlist buttons from vertical to horizontal layout
+- 📊 Moved selected videos counter to playlist header for better visibility
+- 🎛️ Styled splitter handles with hover effects for better UX
+
+### v2.2.1 - Window Resizing Fixes
+- Fixed window resizing on Y-axis
+- Made all controls accessible during resize
+- Adjusted timeline and player minimum sizes
+- Improved splitter stretch factors
+- Added proper scroll areas
+
+### v2.2 - Drag-and-Drop Timeline
+- Visual timeline editor with drag-and-drop support
+- Drag from gallery or video grid to timeline
+- Reorder timeline items by dragging
+- Timeline controls (Play, Export, Clear)
+- Bidirectional sync with playlist
+
+### v2.1.1 - Selection Enhancements
+- Ctrl+Click selection for videos
+- Visual feedback with green borders
+- Selected videos counter
+- Batch add to playlist
+
+### v2.1 - Video Grid & Smart Controls
+- Video thumbnail grid in player window
+- Single Play/Pause toggle button
+- Click to play, Ctrl+Click to select
+- Background thumbnail loading
+
 ## 💡 Tips & Best Practices
 
 ### For Best Performance
@@ -303,23 +345,27 @@ python3 slideshow_json_editor.py
 - **Ctrl+Up** - Move playlist item up
 - **Ctrl+Down** - Move playlist item down
 - **Ctrl+A** - Select all images (Image Gallery)
+- **Ctrl+Click** - Select videos without playing (Video Grid)
 
 ### Workflow Recommendations
 1. Create multiple slideshows from different image sets
-2. Build playlist with best slideshows
-3. Preview with "Play Playlist"
-4. Export with Concat Demuxer for fast, lossless merge
-5. Save playlist and script for future use
+2. Drag videos to timeline or use Ctrl+Click to select and add to playlist
+3. Reorder timeline items by dragging
+4. Preview with "Play Timeline" button
+5. Export with Concat Demuxer for fast, lossless merge
+6. Save playlist and script for future use
 
 ## 🤝 Contributing
 
 Contributions welcome! Areas for improvement:
-- Drag-and-drop playlist reordering
+- ✅ ~~Drag-and-drop playlist reordering~~ (Implemented in v2.2)
 - Video trimming before concatenation
 - Transition effects between videos
 - Audio normalization
 - Batch export multiple playlists
 - Cloud backup of playlists
+- Undo/redo functionality
+- Timeline zoom controls
 
 ## 📄 License
 
