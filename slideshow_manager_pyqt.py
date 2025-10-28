@@ -384,6 +384,11 @@ class SlideshowManager(QMainWindow):
 
             self.images = all_files
 
+            # Reset selected images when reloading (to avoid stale indices)
+            self.selected_images = set(range(len(self.images)))
+            self.previous_selected_images = set()
+            self.select_all_state = 0
+
             self.update_thumbnails()
             self.update_statistics()
             logger.info(f"Loaded {len(self.images)} items (images and videos)")
@@ -399,10 +404,6 @@ class SlideshowManager(QMainWindow):
 
         self.thumbnail_buttons = {}
         self.stop_loading = False
-
-        # Initialize selected images set if not exists
-        if not hasattr(self, 'selected_images'):
-            self.selected_images = set(range(len(self.images)))
 
         # Create placeholder buttons and load PNG thumbnails immediately (fast)
         for i, img_path in enumerate(self.images):
@@ -869,8 +870,31 @@ class SlideshowManager(QMainWindow):
         """Log an event to console."""
         logger.info(message)
 
+    def closeEvent(self, event):
+        """Handle window close event gracefully."""
+        try:
+            # Stop background thumbnail loading thread
+            self.stop_loading = True
+            if self.thumbnail_loader_thread and self.thumbnail_loader_thread.is_alive():
+                self.thumbnail_loader_thread.join(timeout=1)
+
+            logger.info("Slideshow Manager closed gracefully")
+            event.accept()
+        except Exception as e:
+            logger.error(f"Error during close: {e}")
+            event.accept()
+
 def main():
     app = QApplication(sys.argv)
+
+    # Handle Ctrl-C gracefully
+    import signal
+    def signal_handler(sig, frame):
+        logger.info("Received Ctrl-C, shutting down gracefully...")
+        app.quit()
+
+    signal.signal(signal.SIGINT, signal_handler)
+
     window = SlideshowManager()
     window.show()
     sys.exit(app.exec_())
