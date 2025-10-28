@@ -1,4 +1,5 @@
 PyQt5==5.15.9
 PyQt5-sip==12.13.0
 Pillow==10.1.0
+python-vlc==3.0.18122
 

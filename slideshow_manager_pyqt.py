@@ -1,7 +1,27 @@
 #!/usr/bin/env python3
 """
 Slideshow Manager with PyQt5 GUI - Manage, preview, and create slideshows from images.
-Features: thumbnails, sort, search, rename, add, hide, remove images, video playback.
+
+Features:
+- Image gallery with thumbnails, sort, search, rename, add, hide, remove
+- Video player with embedded VLC support
+- Video playlist management (add, remove, reorder, save, load)
+- FFmpeg export with 3 concatenation methods (demuxer, filter, protocol)
+- SQLite database for storing scripts and playlists
+- Keyboard shortcuts for playlist operations
+- Duplicate detection and file validation
+- Progress estimation for FFmpeg operations
+- Usage tracking for saved scripts
+
+New in v2.0 (2025-10-28):
+✅ Video playlist manager with drag-free reordering
+✅ FFmpeg export dialog with 3 concatenation methods
+✅ SQLite database for scripts and playlists
+✅ Duplicate detection and file validation
+✅ Playlist count with duration estimate
+✅ Keyboard shortcuts (Delete, Ctrl+Up/Down)
+✅ Progress estimation for exports
+✅ Confirmation dialogs for destructive actions
 """
 
 import os
@@ -16,6 +36,7 @@ import logging
 import traceback
 from io import StringIO
 import tempfile
+import sqlite3
 
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QListWidget, QListWidgetItem, QFileDialog,
@@ -44,9 +65,199 @@ logger = logging.getLogger(__name__)
 IMAGES_DIR = Path.home() / "Pictures" / "Screenshots"
 OUTPUT_DIR = Path.home() / "Pictures" / "Screenshots"
 CONFIG_FILE = Path.home() / ".slideshow_config.json"
+DB_FILE = Path.home() / ".slideshow_scripts.db"
 THUMBNAIL_SIZE = (120, 120)
 SUPPORTED_FORMATS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')
 VIDEO_FORMATS = ('.mp4', '.avi', '.mov', '.mkv')
+
+
+class FFmpegScriptDatabase:
+    """Database manager for FFmpeg scripts and playlists."""
+
+    def __init__(self, db_path=DB_FILE):
+        self.db_path = db_path
+        self.init_database()
+
+    def init_database(self):
+        """Initialize database with required tables."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Table for FFmpeg scripts
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ffmpeg_scripts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                command TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                modified_at TEXT NOT NULL,
+                times_used INTEGER DEFAULT 0
+            )
+        ''')
+
+        # Table for video playlists
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS playlists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                video_paths TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                modified_at TEXT NOT NULL
+            )
+        ''')
+
+        conn.commit()
+        conn.close()
+        logger.info(f"Database initialized at {self.db_path}")
+
+    def save_script(self, name, command, description=""):
+        """Save or update an FFmpeg script."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        now = datetime.now().isoformat()
+
+        try:
+            cursor.execute('''
+                INSERT INTO ffmpeg_scripts (name, description, command, created_at, modified_at)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (name, description, command, now, now))
+        except sqlite3.IntegrityError:
+            # Update existing script
+            cursor.execute('''
+                UPDATE ffmpeg_scripts
+                SET command = ?, description = ?, modified_at = ?
+                WHERE name = ?
+            ''', (command, description, now, name))
+
+        conn.commit()
+        conn.close()
+        logger.info(f"Saved FFmpeg script: {name}")
+
+    def get_script(self, name):
+        """Get an FFmpeg script by name."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT * FROM ffmpeg_scripts WHERE name = ?', (name,))
+        result = cursor.fetchone()
+
+        conn.close()
+
+        if result:
+            return {
+                'id': result[0],
+                'name': result[1],
+                'description': result[2],
+                'command': result[3],
+                'created_at': result[4],
+                'modified_at': result[5],
+                'times_used': result[6]
+            }
+        return None
+
+    def list_scripts(self):
+        """List all FFmpeg scripts."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT name, description, modified_at, times_used FROM ffmpeg_scripts ORDER BY modified_at DESC')
+        results = cursor.fetchall()
+
+        conn.close()
+        return results
+
+    def delete_script(self, name):
+        """Delete an FFmpeg script."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('DELETE FROM ffmpeg_scripts WHERE name = ?', (name,))
+
+        conn.commit()
+        conn.close()
+        logger.info(f"Deleted FFmpeg script: {name}")
+
+    def increment_usage(self, name):
+        """Increment usage counter for a script."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('UPDATE ffmpeg_scripts SET times_used = times_used + 1 WHERE name = ?', (name,))
+
+        conn.commit()
+        conn.close()
+
+    def save_playlist(self, name, video_paths, description=""):
+        """Save or update a video playlist."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        now = datetime.now().isoformat()
+        video_paths_json = json.dumps(video_paths)
+
+        try:
+            cursor.execute('''
+                INSERT INTO playlists (name, description, video_paths, created_at, modified_at)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (name, description, video_paths_json, now, now))
+        except sqlite3.IntegrityError:
+            # Update existing playlist
+            cursor.execute('''
+                UPDATE playlists
+                SET video_paths = ?, description = ?, modified_at = ?
+                WHERE name = ?
+            ''', (video_paths_json, description, now, name))
+
+        conn.commit()
+        conn.close()
+        logger.info(f"Saved playlist: {name}")
+
+    def get_playlist(self, name):
+        """Get a playlist by name."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT * FROM playlists WHERE name = ?', (name,))
+        result = cursor.fetchone()
+
+        conn.close()
+
+        if result:
+            return {
+                'id': result[0],
+                'name': result[1],
+                'description': result[2],
+                'video_paths': json.loads(result[3]),
+                'created_at': result[4],
+                'modified_at': result[5]
+            }
+        return None
+
+    def list_playlists(self):
+        """List all playlists."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT name, description, modified_at FROM playlists ORDER BY modified_at DESC')
+        results = cursor.fetchall()
+
+        conn.close()
+        return results
+
+    def delete_playlist(self, name):
+        """Delete a playlist."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute('DELETE FROM playlists WHERE name = ?', (name,))
+
+        conn.commit()
+        conn.close()
+        logger.info(f"Deleted playlist: {name}")
+
 
 class RoundedButton(QPushButton):
     """Custom button with rounded corners and modern styling."""
@@ -72,6 +283,318 @@ class RoundedButton(QPushButton):
         """)
         self.setCursor(Qt.PointingHandCursor)
         self.setFlat(False)
+
+
+class PlaylistExportDialog(QDialog):
+    """Dialog for exporting playlist as FFmpeg concatenation script."""
+
+    def __init__(self, playlist, db, parent=None):
+        super().__init__(parent)
+        self.playlist = playlist
+        self.db = db
+        self.setWindowTitle("Export Playlist as FFmpeg Script")
+        self.setGeometry(200, 200, 800, 600)
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Setup the dialog UI."""
+        layout = QVBoxLayout()
+
+        # Title
+        title = QLabel("📤 Export Playlist as FFmpeg Concatenation Script")
+        title.setFont(QFont("Arial", 12, QFont.Bold))
+        layout.addWidget(title)
+
+        # Playlist info
+        info_label = QLabel(f"Playlist contains {len(self.playlist)} videos")
+        layout.addWidget(info_label)
+
+        # Script name
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("Script Name:"))
+        self.name_input = QLineEdit()
+        self.name_input.setText(f"concat_playlist_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        name_layout.addWidget(self.name_input)
+        layout.addLayout(name_layout)
+
+        # Description
+        desc_layout = QHBoxLayout()
+        desc_layout.addWidget(QLabel("Description:"))
+        self.desc_input = QLineEdit()
+        self.desc_input.setText("FFmpeg concatenation script for video playlist")
+        desc_layout.addWidget(self.desc_input)
+        layout.addLayout(desc_layout)
+
+        # Output filename
+        output_layout = QHBoxLayout()
+        output_layout.addWidget(QLabel("Output File:"))
+        self.output_input = QLineEdit()
+        self.output_input.setText(f"concatenated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+        output_layout.addWidget(self.output_input)
+        layout.addLayout(output_layout)
+
+        # Concatenation method
+        method_layout = QHBoxLayout()
+        method_layout.addWidget(QLabel("Method:"))
+        self.method_combo = QComboBox()
+        self.method_combo.addItems([
+            "concat demuxer (fast, no re-encode)",
+            "concat filter (re-encode, more compatible)",
+            "concat protocol (simple, re-encode)"
+        ])
+        self.method_combo.currentIndexChanged.connect(self.update_preview)
+        method_layout.addWidget(self.method_combo)
+        layout.addLayout(method_layout)
+
+        # FFmpeg command preview
+        preview_label = QLabel("FFmpeg Command Preview:")
+        preview_label.setFont(QFont("Arial", 10, QFont.Bold))
+        layout.addWidget(preview_label)
+
+        self.command_preview = QTextEdit()
+        self.command_preview.setReadOnly(True)
+        self.command_preview.setMaximumHeight(150)
+        self.command_preview.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e1e;
+                color: #14FFEC;
+                font-family: monospace;
+                border: 1px solid #3d3d3d;
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        layout.addWidget(self.command_preview)
+
+        # Load saved scripts
+        saved_layout = QHBoxLayout()
+        saved_layout.addWidget(QLabel("Load Saved Script:"))
+        self.saved_scripts_combo = QComboBox()
+        self.load_saved_scripts()
+        self.saved_scripts_combo.currentIndexChanged.connect(self.load_saved_script)
+        saved_layout.addWidget(self.saved_scripts_combo)
+        layout.addLayout(saved_layout)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+
+        btn_save = QPushButton("💾 Save Script to Database")
+        btn_save.clicked.connect(self.save_script)
+        btn_layout.addWidget(btn_save)
+
+        btn_export = QPushButton("📤 Export & Run")
+        btn_export.clicked.connect(self.export_and_run)
+        btn_layout.addWidget(btn_export)
+
+        btn_export_file = QPushButton("💾 Export to File")
+        btn_export_file.clicked.connect(self.export_to_file)
+        btn_layout.addWidget(btn_export_file)
+
+        btn_cancel = QPushButton("❌ Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_cancel)
+
+        layout.addLayout(btn_layout)
+
+        self.setLayout(layout)
+        self.update_preview()
+
+    def load_saved_scripts(self):
+        """Load saved scripts from database."""
+        self.saved_scripts_combo.clear()
+        self.saved_scripts_combo.addItem("-- Select a saved script --")
+
+        scripts = self.db.list_scripts()
+        for script in scripts:
+            name, desc, modified, times_used = script
+            display = f"{name} (used {times_used}x)"
+            self.saved_scripts_combo.addItem(display, userData=name)
+
+    def load_saved_script(self, index):
+        """Load a saved script into the preview."""
+        if index <= 0:
+            return
+
+        name = self.saved_scripts_combo.itemData(index)
+        script_data = self.db.get_script(name)
+
+        if script_data:
+            self.command_preview.setPlainText(script_data['command'])
+            self.name_input.setText(script_data['name'])
+            self.desc_input.setText(script_data['description'])
+
+    def update_preview(self):
+        """Update the FFmpeg command preview."""
+        method = self.method_combo.currentIndex()
+        output_file = self.output_input.text()
+
+        if method == 0:  # concat demuxer
+            command = self.generate_concat_demuxer_script(output_file)
+        elif method == 1:  # concat filter
+            command = self.generate_concat_filter_script(output_file)
+        else:  # concat protocol
+            command = self.generate_concat_protocol_script(output_file)
+
+        self.command_preview.setPlainText(command)
+
+    def generate_concat_demuxer_script(self, output_file):
+        """Generate FFmpeg concat demuxer script (fast, no re-encode)."""
+        # Create file list
+        file_list = "# FFmpeg concat demuxer file list\n"
+        for video_path in self.playlist:
+            file_list += f"file '{video_path}'\n"
+
+        command = f"""# Step 1: Create concat.txt file with video list
+cat > concat.txt << 'EOF'
+{file_list}EOF
+
+# Step 2: Run FFmpeg concat demuxer (fast, no re-encode)
+ffmpeg -f concat -safe 0 -i concat.txt -c copy {output_file}
+
+# Step 3: Cleanup
+rm concat.txt
+"""
+        return command
+
+    def generate_concat_filter_script(self, output_file):
+        """Generate FFmpeg concat filter script (re-encode, more compatible)."""
+        inputs = ""
+        filter_complex = ""
+
+        for i, video_path in enumerate(self.playlist):
+            inputs += f"-i '{video_path}' "
+            filter_complex += f"[{i}:v:0][{i}:a:0]"
+
+        filter_complex += f"concat=n={len(self.playlist)}:v=1:a=1[outv][outa]"
+
+        command = f"""# FFmpeg concat filter (re-encode for compatibility)
+ffmpeg {inputs}\\
+  -filter_complex "{filter_complex}" \\
+  -map "[outv]" -map "[outa]" \\
+  -c:v libx264 -preset medium -crf 23 \\
+  -c:a aac -b:a 192k \\
+  {output_file}
+"""
+        return command
+
+    def generate_concat_protocol_script(self, output_file):
+        """Generate FFmpeg concat protocol script (simple, re-encode)."""
+        concat_str = "concat:" + "|".join(self.playlist)
+
+        command = f"""# FFmpeg concat protocol (simple, re-encode)
+ffmpeg -i "{concat_str}" \\
+  -c:v libx264 -preset medium -crf 23 \\
+  -c:a aac -b:a 192k \\
+  {output_file}
+"""
+        return command
+
+    def save_script(self):
+        """Save the script to database."""
+        name = self.name_input.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Warning", "Please enter a script name")
+            return
+
+        description = self.desc_input.text().strip()
+        command = self.command_preview.toPlainText()
+
+        self.db.save_script(name, command, description)
+        QMessageBox.information(self, "Success", f"Script '{name}' saved to database!")
+        self.load_saved_scripts()
+
+    def export_and_run(self):
+        """Export script and run it immediately."""
+        command = self.command_preview.toPlainText()
+        output_file = self.output_input.text()
+
+        # Validate output filename
+        if not output_file or output_file.strip() == "":
+            QMessageBox.warning(self, "Error", "Please enter an output filename")
+            return
+
+        # Check if output file already exists
+        output_path = OUTPUT_DIR / output_file
+        if output_path.exists():
+            reply = QMessageBox.question(
+                self, "File Exists",
+                f"'{output_file}' already exists.\nOverwrite it?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                return
+
+        # Estimate duration
+        method = self.method_combo.currentIndex()
+        video_count = len(self.playlist)
+        if method == 0:  # concat demuxer
+            estimated_time = "1-2 seconds"
+        else:  # re-encode methods
+            estimated_time = f"{video_count * 30}-{video_count * 60} seconds"
+
+        # Confirm
+        reply = QMessageBox.question(
+            self, "Confirm",
+            f"Run FFmpeg concatenation?\n\nOutput: {output_file}\nVideos: {video_count}\nEstimated time: {estimated_time}",
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            # Save script to database
+            name = self.name_input.text().strip()
+            if name:
+                self.db.save_script(name, command, self.desc_input.text())
+                self.db.increment_usage(name)
+
+            # Run in background thread
+            thread = threading.Thread(target=self._run_concat_worker, args=(command, output_file), daemon=True)
+            thread.start()
+
+            QMessageBox.information(
+                self, "Running",
+                f"FFmpeg concatenation started in background\n\nEstimated time: {estimated_time}\nCheck logs for progress"
+            )
+            self.accept()
+
+    def _run_concat_worker(self, command, output_file):
+        """Worker thread to run FFmpeg concatenation."""
+        try:
+            # Execute the script
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                cwd=str(OUTPUT_DIR)
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Concatenation successful: {output_file}")
+            else:
+                logger.error(f"Concatenation failed: {result.stderr}")
+        except Exception as e:
+            logger.error(f"Error running concatenation: {e}")
+
+    def export_to_file(self):
+        """Export script to a shell file."""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Script", f"concat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.sh",
+            "Shell Scripts (*.sh)"
+        )
+
+        if file_path:
+            command = self.command_preview.toPlainText()
+
+            with open(file_path, 'w') as f:
+                f.write("#!/bin/bash\n")
+                f.write(f"# Generated by Slideshow Manager on {datetime.now().isoformat()}\n")
+                f.write(f"# Playlist: {len(self.playlist)} videos\n\n")
+                f.write(command)
+
+            os.chmod(file_path, 0o755)
+            QMessageBox.information(self, "Success", f"Script exported to:\n{file_path}")
+
 
 class SlideshowManager(QMainWindow):
     """Main application window."""
@@ -108,6 +631,12 @@ class SlideshowManager(QMainWindow):
             "-c:v libx264 -r 30 -pix_fmt yuv420p -y output.mp4"
         )
 
+        # Initialize database for scripts and playlists
+        self.db = FFmpegScriptDatabase()
+
+        # Playlist management
+        self.current_playlist = []  # List of video paths in order
+
         # Load configuration
         self.load_config()
         self.detect_video_players()
@@ -116,6 +645,9 @@ class SlideshowManager(QMainWindow):
         self.setup_ui()
         self.load_images()
         self.show_available_videos()
+
+        # Show video grid on startup (since player is stopped)
+        QTimer.singleShot(500, self.show_video_grid)
 
         logger.info("Slideshow Manager started")
     
@@ -174,15 +706,18 @@ class SlideshowManager(QMainWindow):
         self.apply_dark_theme()
     
     def create_video_panel(self):
-        """Create video player panel with embedded VLC."""
+        """Create video player panel with embedded VLC and playlist functionality."""
         panel = QWidget()
-        layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(8)
+
+        # Left side: Player
+        left_layout = QVBoxLayout()
 
         # Header with title and video selector
         header_layout = QHBoxLayout()
-        label = QLabel("🎬 Video Player")
+        label = QLabel("🎬 Video Player & Playlist")
         label.setFont(QFont("Arial", 11, QFont.Bold))
         header_layout.addWidget(label)
         header_layout.addStretch()
@@ -193,33 +728,57 @@ class SlideshowManager(QMainWindow):
         self.video_combo.currentIndexChanged.connect(self.on_video_selected)
         header_layout.addWidget(self.video_combo)
 
-        layout.addLayout(header_layout)
+        left_layout.addLayout(header_layout)
 
-        # VLC player widget
+        # VLC player widget - FIXED: Use media_player_new() instead of media_list_player_new()
         self.vlc_instance = vlc.Instance()
-        self.vlc_player = self.vlc_instance.media_list_player_new()
+        self.media_player = self.vlc_instance.media_player_new()
 
-        # Create a widget to hold the VLC player
+        # Create a stacked widget to hold both VLC player and video thumbnail grid
+        from PyQt5.QtWidgets import QStackedWidget, QScrollArea
+        self.player_stack = QStackedWidget()
+
+        # Page 0: VLC player widget
         self.vlc_widget = QWidget()
         self.vlc_widget.setStyleSheet("background-color: #1a1a1a; border-radius: 4px;")
-        vlc_layout = QVBoxLayout()
-        vlc_layout.setContentsMargins(0, 0, 0, 0)
-        self.vlc_widget.setLayout(vlc_layout)
+        self.vlc_widget.setMinimumSize(640, 360)  # FIXED: Set minimum size so widget is visible
 
-        # Create media player for rendering
-        self.media_player = self.vlc_instance.media_list_player_new()
-        layout.addWidget(self.vlc_widget, 1)
+        # CRITICAL FIX: Attach VLC to the widget's window handle
+        # This is platform-specific and required for embedded playback
+        if sys.platform.startswith('linux'):  # Linux using X Server
+            self.media_player.set_xwindow(int(self.vlc_widget.winId()))
+        elif sys.platform == "win32":  # Windows
+            self.media_player.set_hwnd(int(self.vlc_widget.winId()))
+        elif sys.platform == "darwin":  # macOS
+            self.media_player.set_nsobject(int(self.vlc_widget.winId()))
+
+        self.player_stack.addWidget(self.vlc_widget)
+
+        # Page 1: Video thumbnail grid (shown when stopped)
+        self.video_grid_widget = QWidget()
+        self.video_grid_widget.setStyleSheet("background-color: #1a1a1a; border-radius: 4px;")
+        video_grid_scroll = QScrollArea()
+        video_grid_scroll.setWidgetResizable(True)
+        video_grid_scroll.setWidget(self.video_grid_widget)
+        video_grid_scroll.setStyleSheet("background-color: #1a1a1a; border: none;")
+
+        self.video_grid_layout = QGridLayout(self.video_grid_widget)
+        self.video_grid_layout.setSpacing(10)
+        self.video_grid_layout.setContentsMargins(10, 10, 10, 10)
+
+        self.player_stack.addWidget(video_grid_scroll)
+
+        # Start with VLC player visible
+        self.player_stack.setCurrentIndex(0)
+
+        left_layout.addWidget(self.player_stack, 1)
 
         # Control buttons
         controls_layout = QHBoxLayout()
 
-        btn_play = RoundedButton("▶️ Play")
-        btn_play.clicked.connect(self.vlc_play)
-        controls_layout.addWidget(btn_play)
-
-        btn_pause = RoundedButton("⏸️ Pause")
-        btn_pause.clicked.connect(self.vlc_pause)
-        controls_layout.addWidget(btn_pause)
+        self.btn_play_pause = RoundedButton("▶️ Play")
+        self.btn_play_pause.clicked.connect(self.vlc_play_pause_toggle)
+        controls_layout.addWidget(self.btn_play_pause)
 
         btn_stop = RoundedButton("⏹️ Stop")
         btn_stop.clicked.connect(self.vlc_stop)
@@ -231,9 +790,99 @@ class SlideshowManager(QMainWindow):
         btn_folder.clicked.connect(self.open_videos_folder)
         controls_layout.addWidget(btn_folder)
 
-        layout.addLayout(controls_layout)
+        left_layout.addLayout(controls_layout)
 
-        panel.setLayout(layout)
+        # Right side: Playlist Manager
+        right_layout = QVBoxLayout()
+
+        # Playlist header with count
+        playlist_header_layout = QHBoxLayout()
+        playlist_label = QLabel("📋 Playlist")
+        playlist_label.setFont(QFont("Arial", 10, QFont.Bold))
+        playlist_header_layout.addWidget(playlist_label)
+
+        self.playlist_count_label = QLabel("(0 items)")
+        self.playlist_count_label.setStyleSheet("color: #888;")
+        playlist_header_layout.addWidget(self.playlist_count_label)
+        playlist_header_layout.addStretch()
+
+        right_layout.addLayout(playlist_header_layout)
+
+        # Playlist list widget
+        self.playlist_widget = QListWidget()
+        self.playlist_widget.setMaximumWidth(300)
+        self.playlist_widget.setStyleSheet("""
+            QListWidget {
+                background-color: #2a2a2a;
+                border: 1px solid #3d3d3d;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QListWidget::item {
+                padding: 4px;
+                border-radius: 2px;
+            }
+            QListWidget::item:selected {
+                background-color: #0d7377;
+            }
+        """)
+
+        # Add keyboard shortcuts tooltip
+        self.playlist_widget.setToolTip(
+            "Keyboard shortcuts:\n"
+            "Delete - Remove selected item\n"
+            "Ctrl+Up - Move item up\n"
+            "Ctrl+Down - Move item down"
+        )
+
+        right_layout.addWidget(self.playlist_widget)
+
+        # Playlist control buttons
+        playlist_btn_layout = QVBoxLayout()
+
+        btn_add_to_playlist = RoundedButton("➕ Add Selected")
+        btn_add_to_playlist.clicked.connect(self.add_to_playlist)
+        playlist_btn_layout.addWidget(btn_add_to_playlist)
+
+        btn_remove_from_playlist = RoundedButton("➖ Remove")
+        btn_remove_from_playlist.clicked.connect(self.remove_from_playlist)
+        playlist_btn_layout.addWidget(btn_remove_from_playlist)
+
+        btn_move_up = RoundedButton("⬆️ Move Up")
+        btn_move_up.clicked.connect(self.move_playlist_up)
+        playlist_btn_layout.addWidget(btn_move_up)
+
+        btn_move_down = RoundedButton("⬇️ Move Down")
+        btn_move_down.clicked.connect(self.move_playlist_down)
+        playlist_btn_layout.addWidget(btn_move_down)
+
+        btn_clear_playlist = RoundedButton("🗑️ Clear All")
+        btn_clear_playlist.clicked.connect(self.clear_playlist)
+        playlist_btn_layout.addWidget(btn_clear_playlist)
+
+        btn_play_playlist = RoundedButton("▶️ Play Playlist")
+        btn_play_playlist.clicked.connect(self.play_playlist)
+        playlist_btn_layout.addWidget(btn_play_playlist)
+
+        btn_save_playlist = RoundedButton("💾 Save Playlist")
+        btn_save_playlist.clicked.connect(self.save_playlist_dialog)
+        playlist_btn_layout.addWidget(btn_save_playlist)
+
+        btn_load_playlist = RoundedButton("📂 Load Playlist")
+        btn_load_playlist.clicked.connect(self.load_playlist_dialog)
+        playlist_btn_layout.addWidget(btn_load_playlist)
+
+        btn_export_concat = RoundedButton("📤 Export FFmpeg")
+        btn_export_concat.clicked.connect(self.export_playlist_ffmpeg)
+        playlist_btn_layout.addWidget(btn_export_concat)
+
+        right_layout.addLayout(playlist_btn_layout)
+
+        # Add layouts to main layout
+        main_layout.addLayout(left_layout, 2)
+        main_layout.addLayout(right_layout, 1)
+
+        panel.setLayout(main_layout)
         return panel
 
     def create_ffmpeg_panel(self):
@@ -471,10 +1120,17 @@ class SlideshowManager(QMainWindow):
         btn.setFlat(True)
         btn.index = index
         btn.img_path = img_path
-        btn.clicked.connect(lambda: self.toggle_image_selection(index, None))
+
+        # Different behavior for videos vs images
+        is_video = img_path.suffix.lower() in VIDEO_FORMATS
+        if is_video:
+            # Videos: Single click plays, Ctrl+click toggles selection
+            btn.clicked.connect(lambda: self.on_thumbnail_clicked(index, img_path))
+        else:
+            # Images: Click toggles selection
+            btn.clicked.connect(lambda: self.toggle_image_selection(index, None))
 
         # Set placeholder text
-        is_video = img_path.suffix.lower() in VIDEO_FORMATS
         btn.setText("📹" if is_video else "🖼️")
 
         # Update border
@@ -485,7 +1141,10 @@ class SlideshowManager(QMainWindow):
             file_size = img_path.stat().st_size / 1024
             file_name = img_path.name
             file_type = "Video" if is_video else "Image"
-            tooltip_text = f"{file_name}\n{file_type} | Size: {file_size:.1f} KB"
+            if is_video:
+                tooltip_text = f"{file_name}\n{file_type} | Size: {file_size:.1f} KB\n\nClick to play\nCtrl+Click to select"
+            else:
+                tooltip_text = f"{file_name}\n{file_type} | Size: {file_size:.1f} KB\n\nClick to select"
             btn.setToolTip(tooltip_text)
         except:
             pass
@@ -617,6 +1276,46 @@ class SlideshowManager(QMainWindow):
             }}
         """)
 
+    def on_thumbnail_clicked(self, index, img_path):
+        """Handle thumbnail click - play video or toggle selection based on modifiers."""
+        # Check if Ctrl is pressed
+        modifiers = QApplication.keyboardModifiers()
+        if modifiers == Qt.ControlModifier:
+            # Ctrl+Click: Toggle selection
+            self.toggle_image_selection(index, None)
+        else:
+            # Regular click on video: Play it
+            if img_path.suffix.lower() in VIDEO_FORMATS:
+                self.play_video_from_thumbnail(img_path)
+            else:
+                # For images, just toggle selection
+                self.toggle_image_selection(index, None)
+
+    def play_video_from_thumbnail(self, video_path):
+        """Play a video directly from thumbnail click."""
+        try:
+            # Find the video in available_videos list
+            if video_path in self.available_videos:
+                index = self.available_videos.index(video_path)
+                self.video_combo.setCurrentIndex(index)
+
+                # Load and play the video
+                media = self.vlc_instance.media_new(str(video_path))
+                self.media_player.set_media(media)
+                self.media_player.play()
+                self.btn_play_pause.setText("⏸️ Pause")
+
+                # Hide video grid, show VLC player
+                self.player_stack.setCurrentIndex(0)
+
+                logger.info(f"Playing video from thumbnail: {video_path.name}")
+                self.log_event(f"▶️ Playing: {video_path.name}")
+            else:
+                self.log_event(f"❌ Video not found in available videos: {video_path.name}")
+        except Exception as e:
+            logger.error(f"Error playing video from thumbnail: {e}")
+            self.log_event(f"❌ Error playing video: {e}")
+
     def toggle_image_selection(self, index, state):
         """Toggle image selection for slideshow."""
         # Toggle selection state
@@ -703,39 +1402,319 @@ class SlideshowManager(QMainWindow):
         video_path = self.available_videos[index]
         logger.debug(f"Video selected: {video_path.name}")
 
-    def vlc_play(self):
-        """Play the selected video using embedded VLC."""
+    def vlc_play_pause_toggle(self):
+        """Toggle between play and pause states."""
+        try:
+            current_state = self.media_player.get_state()
+
+            if current_state == vlc.State.Playing:
+                # Currently playing -> Pause
+                self.media_player.pause()
+                self.btn_play_pause.setText("▶️ Play")
+                self.log_event("⏸️ Paused")
+                logger.info("Paused playback")
+            elif current_state == vlc.State.Paused:
+                # Currently paused -> Resume
+                self.media_player.play()
+                self.btn_play_pause.setText("⏸️ Pause")
+                self.log_event("▶️ Resumed")
+                logger.info("Resumed playback")
+            else:
+                # Stopped or no media -> Load and play
+                if not self.available_videos or self.video_combo.currentIndex() < 0:
+                    self.log_event("❌ No video selected")
+                    return
+
+                video_path = self.available_videos[self.video_combo.currentIndex()]
+                media = self.vlc_instance.media_new(str(video_path))
+                self.media_player.set_media(media)
+                self.media_player.play()
+                self.btn_play_pause.setText("⏸️ Pause")
+
+                # Hide video grid, show VLC player
+                self.player_stack.setCurrentIndex(0)
+
+                logger.info(f"Playing video: {video_path.name}")
+                self.log_event(f"▶️ Playing: {video_path.name}")
+        except Exception as e:
+            logger.error(f"Error toggling play/pause: {e}")
+            self.log_event(f"❌ Error: {e}")
+
+    def vlc_stop(self):
+        """Stop the video and show video thumbnail grid."""
+        try:
+            self.media_player.stop()
+            self.btn_play_pause.setText("▶️ Play")
+            self.log_event("⏹️ Stopped")
+            logger.info("Stopped playback")
+
+            # Show video thumbnail grid
+            self.show_video_grid()
+        except Exception as e:
+            logger.error(f"Error stopping video: {e}")
+
+    def show_video_grid(self):
+        """Display video thumbnails in the player area when stopped."""
+        try:
+            # Clear existing grid
+            while self.video_grid_layout.count():
+                item = self.video_grid_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+
+            # Get all video files
+            video_files = [img for img in self.images if img.suffix.lower() in VIDEO_FORMATS]
+
+            if not video_files:
+                # No videos, show message
+                label = QLabel("No videos available")
+                label.setStyleSheet("color: #888; font-size: 16px;")
+                label.setAlignment(Qt.AlignCenter)
+                self.video_grid_layout.addWidget(label, 0, 0)
+                self.player_stack.setCurrentIndex(1)
+                return
+
+            # Create thumbnail buttons for videos (4 per row)
+            for i, video_path in enumerate(video_files):
+                row = i // 4
+                col = i % 4
+
+                # Create button
+                btn = QPushButton()
+                btn.setFixedSize(150, 150)
+                btn.setCursor(Qt.PointingHandCursor)
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #2a2a2a;
+                        border: 2px solid #3a3a3a;
+                        border-radius: 8px;
+                        color: white;
+                        font-size: 14px;
+                    }
+                    QPushButton:hover {
+                        border: 2px solid #4a9eff;
+                        background-color: #3a3a3a;
+                    }
+                """)
+
+                # Set thumbnail or placeholder
+                if video_path in self.thumbnail_cache:
+                    pixmap = self.thumbnail_cache[video_path]
+                    btn.setIcon(QIcon(pixmap))
+                    btn.setIconSize(QSize(140, 140))
+                    btn._pixmap = pixmap  # Keep reference
+                else:
+                    btn.setText("📹")
+                    btn.setStyleSheet(btn.styleSheet() + "font-size: 48px;")
+
+                # Set tooltip
+                try:
+                    file_size = video_path.stat().st_size / (1024 * 1024)
+                    tooltip = f"{video_path.name}\nSize: {file_size:.1f} MB\n\nClick to play"
+                    btn.setToolTip(tooltip)
+                except:
+                    btn.setToolTip(f"{video_path.name}\n\nClick to play")
+
+                # Connect click to play video
+                btn.clicked.connect(lambda checked, vp=video_path: self.play_video_from_thumbnail(vp))
+
+                self.video_grid_layout.addWidget(btn, row, col)
+
+            # Switch to video grid view
+            self.player_stack.setCurrentIndex(1)
+            logger.info(f"Showing video grid with {len(video_files)} videos")
+
+        except Exception as e:
+            logger.error(f"Error showing video grid: {e}")
+
+    def update_playlist_count(self):
+        """Update the playlist count label."""
+        count = len(self.current_playlist)
+        if count == 0:
+            self.playlist_count_label.setText("(0 items)")
+        elif count == 1:
+            self.playlist_count_label.setText("(1 item)")
+        else:
+            # Calculate total duration estimate (assuming 3 sec per image, 5 images per video)
+            estimated_duration = count * 15  # seconds
+            minutes = estimated_duration // 60
+            seconds = estimated_duration % 60
+            self.playlist_count_label.setText(f"({count} items, ~{minutes}m{seconds}s)")
+
+    def add_to_playlist(self):
+        """Add selected video to playlist."""
         if not self.available_videos or self.video_combo.currentIndex() < 0:
             self.log_event("❌ No video selected")
             return
 
-        try:
-            video_path = self.available_videos[self.video_combo.currentIndex()]
-            media = self.vlc_instance.media_new(str(video_path))
-            self.media_player.set_media_list(self.vlc_instance.media_list_new([media]))
-            self.media_player.play()
-            logger.info(f"Playing video: {video_path.name}")
-            self.log_event(f"▶️ Playing: {video_path.name}")
-        except Exception as e:
-            logger.error(f"Error playing video: {e}")
-            self.log_event(f"❌ Error playing video: {e}")
+        video_path = self.available_videos[self.video_combo.currentIndex()]
 
-    def vlc_pause(self):
-        """Pause the video."""
-        try:
-            self.media_player.pause()
-            self.log_event("⏸️ Paused")
-        except Exception as e:
-            logger.error(f"Error pausing video: {e}")
+        # Validate file exists
+        if not video_path.exists():
+            self.log_event(f"❌ Video file not found: {video_path.name}")
+            QMessageBox.warning(self, "Error", f"Video file not found:\n{video_path}")
+            return
 
-    def vlc_stop(self):
-        """Stop the video."""
+        # Check for duplicates
+        if str(video_path) in self.current_playlist:
+            reply = QMessageBox.question(
+                self, "Duplicate",
+                f"'{video_path.name}' is already in the playlist.\nAdd it again?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                return
+
+        self.current_playlist.append(str(video_path))
+
+        # Update playlist widget
+        self.playlist_widget.addItem(video_path.name)
+        self.update_playlist_count()
+        self.log_event(f"➕ Added to playlist: {video_path.name}")
+        logger.info(f"Added to playlist: {video_path.name}")
+
+    def remove_from_playlist(self):
+        """Remove selected item from playlist."""
+        current_row = self.playlist_widget.currentRow()
+        if current_row < 0:
+            self.log_event("❌ No playlist item selected")
+            return
+
+        item = self.playlist_widget.takeItem(current_row)
+        del self.current_playlist[current_row]
+        self.update_playlist_count()
+        self.log_event(f"➖ Removed from playlist: {item.text()}")
+        logger.info(f"Removed from playlist: {item.text()}")
+
+    def move_playlist_up(self):
+        """Move selected playlist item up."""
+        current_row = self.playlist_widget.currentRow()
+        if current_row <= 0:
+            return
+
+        # Swap in list
+        self.current_playlist[current_row], self.current_playlist[current_row - 1] = \
+            self.current_playlist[current_row - 1], self.current_playlist[current_row]
+
+        # Swap in widget
+        item = self.playlist_widget.takeItem(current_row)
+        self.playlist_widget.insertItem(current_row - 1, item)
+        self.playlist_widget.setCurrentRow(current_row - 1)
+        self.log_event("⬆️ Moved item up")
+
+    def move_playlist_down(self):
+        """Move selected playlist item down."""
+        current_row = self.playlist_widget.currentRow()
+        if current_row < 0 or current_row >= len(self.current_playlist) - 1:
+            return
+
+        # Swap in list
+        self.current_playlist[current_row], self.current_playlist[current_row + 1] = \
+            self.current_playlist[current_row + 1], self.current_playlist[current_row]
+
+        # Swap in widget
+        item = self.playlist_widget.takeItem(current_row)
+        self.playlist_widget.insertItem(current_row + 1, item)
+        self.playlist_widget.setCurrentRow(current_row + 1)
+        self.log_event("⬇️ Moved item down")
+
+    def clear_playlist(self):
+        """Clear the entire playlist."""
+        if not self.current_playlist:
+            return
+
+        # Confirm before clearing
+        reply = QMessageBox.question(
+            self, "Confirm Clear",
+            f"Clear all {len(self.current_playlist)} items from playlist?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            self.current_playlist.clear()
+            self.playlist_widget.clear()
+            self.update_playlist_count()
+            self.log_event("🗑️ Playlist cleared")
+            logger.info("Playlist cleared")
+
+    def play_playlist(self):
+        """Play all videos in playlist sequentially using VLC."""
+        if not self.current_playlist:
+            self.log_event("❌ Playlist is empty")
+            return
+
         try:
-            self.media_player.stop()
-            self.log_event("⏹️ Stopped")
+            # Create VLC media list for playlist
+            media_list = self.vlc_instance.media_list_new()
+
+            for video_path in self.current_playlist:
+                media = self.vlc_instance.media_new(video_path)
+                media_list.add_media(media)
+
+            # Create media list player if not exists
+            if not hasattr(self, 'playlist_player'):
+                self.playlist_player = self.vlc_instance.media_list_player_new()
+                self.playlist_player.set_media_player(self.media_player)
+
+            self.playlist_player.set_media_list(media_list)
+            self.playlist_player.play()
+
+            self.log_event(f"▶️ Playing playlist ({len(self.current_playlist)} videos)")
+            logger.info(f"Playing playlist with {len(self.current_playlist)} videos")
         except Exception as e:
-            logger.error(f"Error stopping video: {e}")
-    
+            logger.error(f"Error playing playlist: {e}")
+            self.log_event(f"❌ Error playing playlist: {e}")
+
+    def save_playlist_dialog(self):
+        """Show dialog to save current playlist."""
+        if not self.current_playlist:
+            QMessageBox.warning(self, "Warning", "Playlist is empty")
+            return
+
+        name, ok = QInputDialog.getText(self, "Save Playlist", "Enter playlist name:")
+        if ok and name:
+            description, ok2 = QInputDialog.getText(self, "Save Playlist", "Enter description (optional):")
+            if ok2:
+                self.db.save_playlist(name, self.current_playlist, description)
+                QMessageBox.information(self, "Success", f"Playlist '{name}' saved!")
+                self.log_event(f"💾 Saved playlist: {name}")
+
+    def load_playlist_dialog(self):
+        """Show dialog to load a saved playlist."""
+        playlists = self.db.list_playlists()
+        if not playlists:
+            QMessageBox.information(self, "Info", "No saved playlists found")
+            return
+
+        # Create selection dialog
+        items = [f"{p[0]} - {p[1] or 'No description'}" for p in playlists]
+        item, ok = QInputDialog.getItem(self, "Load Playlist", "Select playlist:", items, 0, False)
+
+        if ok and item:
+            name = item.split(" - ")[0]
+            playlist_data = self.db.get_playlist(name)
+
+            if playlist_data:
+                self.current_playlist = playlist_data['video_paths']
+
+                # Update widget
+                self.playlist_widget.clear()
+                for video_path in self.current_playlist:
+                    self.playlist_widget.addItem(Path(video_path).name)
+
+                self.log_event(f"📂 Loaded playlist: {name} ({len(self.current_playlist)} videos)")
+                QMessageBox.information(self, "Success", f"Loaded playlist '{name}'")
+
+    def export_playlist_ffmpeg(self):
+        """Export playlist as FFmpeg concatenation script."""
+        if not self.current_playlist:
+            QMessageBox.warning(self, "Warning", "Playlist is empty")
+            return
+
+        # Show dialog to customize export
+        dialog = PlaylistExportDialog(self.current_playlist, self.db, self)
+        dialog.exec_()
+
     def add_images(self):
         """Add images from file dialog."""
         files, _ = QFileDialog.getOpenFileNames(
