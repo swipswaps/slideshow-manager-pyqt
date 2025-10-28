@@ -21,12 +21,13 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QPushButton, QLabel, QListWidget, QListWidgetItem, QFileDialog,
                              QDialog, QLineEdit, QComboBox, QSpinBox, QCheckBox, QTabWidget,
                              QScrollArea, QGridLayout, QSplitter, QMessageBox, QInputDialog,
-                             QTextEdit, QPlainTextEdit)
+                             QTextEdit, QPlainTextEdit, QSlider)
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer, QRect
 from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor, QPalette, QImage
 from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
 
 from PIL import Image
+import vlc
 
 # Configure logging - output to console for visibility
 logging.basicConfig(
@@ -173,28 +174,64 @@ class SlideshowManager(QMainWindow):
         self.apply_dark_theme()
     
     def create_video_panel(self):
-        """Create video selection panel."""
+        """Create video player panel with embedded VLC."""
         panel = QWidget()
         layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
 
-        label = QLabel("📹 Select Video to Play")
+        # Header with title and video selector
+        header_layout = QHBoxLayout()
+        label = QLabel("🎬 Video Player")
         label.setFont(QFont("Arial", 11, QFont.Bold))
-        layout.addWidget(label)
+        header_layout.addWidget(label)
+        header_layout.addStretch()
 
-        self.video_list = QListWidget()
-        layout.addWidget(self.video_list)
+        # Video dropdown selector
+        self.video_combo = QComboBox()
+        self.video_combo.setMaximumWidth(300)
+        self.video_combo.currentIndexChanged.connect(self.on_video_selected)
+        header_layout.addWidget(self.video_combo)
 
-        btn_layout = QHBoxLayout()
-        btn_play = RoundedButton("▶️ Play Selected")
-        btn_play.clicked.connect(self.play_selected_video)
-        btn_layout.addWidget(btn_play)
+        layout.addLayout(header_layout)
+
+        # VLC player widget
+        self.vlc_instance = vlc.Instance()
+        self.vlc_player = self.vlc_instance.media_list_player_new()
+
+        # Create a widget to hold the VLC player
+        self.vlc_widget = QWidget()
+        self.vlc_widget.setStyleSheet("background-color: #1a1a1a; border-radius: 4px;")
+        vlc_layout = QVBoxLayout()
+        vlc_layout.setContentsMargins(0, 0, 0, 0)
+        self.vlc_widget.setLayout(vlc_layout)
+
+        # Create media player for rendering
+        self.media_player = self.vlc_instance.media_list_player_new()
+        layout.addWidget(self.vlc_widget, 1)
+
+        # Control buttons
+        controls_layout = QHBoxLayout()
+
+        btn_play = RoundedButton("▶️ Play")
+        btn_play.clicked.connect(self.vlc_play)
+        controls_layout.addWidget(btn_play)
+
+        btn_pause = RoundedButton("⏸️ Pause")
+        btn_pause.clicked.connect(self.vlc_pause)
+        controls_layout.addWidget(btn_pause)
+
+        btn_stop = RoundedButton("⏹️ Stop")
+        btn_stop.clicked.connect(self.vlc_stop)
+        controls_layout.addWidget(btn_stop)
+
+        controls_layout.addStretch()
 
         btn_folder = RoundedButton("📁 Open Folder")
         btn_folder.clicked.connect(self.open_videos_folder)
-        btn_layout.addWidget(btn_folder)
+        controls_layout.addWidget(btn_folder)
 
-        btn_layout.addStretch()
-        layout.addLayout(btn_layout)
+        layout.addLayout(controls_layout)
 
         panel.setLayout(layout)
         return panel
@@ -634,46 +671,70 @@ class SlideshowManager(QMainWindow):
         self.stats_label.setText(stats_text)
     
     def show_available_videos(self):
-        """Show available videos in the list."""
+        """Show available videos in the combo box."""
         try:
             self.available_videos = sorted([
                 f for f in OUTPUT_DIR.glob('slideshow_*.mp4')
             ])
-            
-            self.video_list.clear()
+
+            # Block signals to avoid triggering on_video_selected during population
+            self.video_combo.blockSignals(True)
+            self.video_combo.clear()
+
             for video in self.available_videos:
                 size_mb = video.stat().st_size / (1024 * 1024)
-                mtime = datetime.fromtimestamp(video.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')
-                item_text = f"{video.name} ({size_mb:.1f} MB) - {mtime}"
-                self.video_list.addItem(item_text)
-            
+                mtime = datetime.fromtimestamp(video.stat().st_mtime).strftime('%Y-%m-%d %H:%M')
+                display_text = f"{video.name} ({size_mb:.1f} MB) - {mtime}"
+                self.video_combo.addItem(display_text, userData=str(video))
+
+            self.video_combo.blockSignals(False)
+
             if self.available_videos:
-                self.video_list.setCurrentRow(0)
                 logger.info(f"Showing {len(self.available_videos)} videos")
         except Exception as e:
             logger.error(f"Error showing videos: {e}")
             self.log_event(f"Error showing videos: {e}")
-    
-    def play_selected_video(self):
-        """Play the selected video."""
-        current_row = self.video_list.currentRow()
-        if current_row < 0 or current_row >= len(self.available_videos):
-            self.log_event("No video selected")
+
+    def on_video_selected(self, index):
+        """Handle video selection from combo box."""
+        if index < 0 or index >= len(self.available_videos):
             return
-        
-        video_path = self.available_videos[current_row]
-        if not self.video_players:
-            self.log_event("No video player available")
+
+        video_path = self.available_videos[index]
+        logger.debug(f"Video selected: {video_path.name}")
+
+    def vlc_play(self):
+        """Play the selected video using embedded VLC."""
+        if not self.available_videos or self.video_combo.currentIndex() < 0:
+            self.log_event("❌ No video selected")
             return
-        
+
         try:
-            player = self.video_players[0]
-            subprocess.Popen([player, str(video_path)])
-            logger.info(f"Playing video with {player}: {video_path}")
-            self.log_event(f"Playing: {video_path.name}")
+            video_path = self.available_videos[self.video_combo.currentIndex()]
+            media = self.vlc_instance.media_new(str(video_path))
+            self.media_player.set_media_list(self.vlc_instance.media_list_new([media]))
+            self.media_player.play()
+            logger.info(f"Playing video: {video_path.name}")
+            self.log_event(f"▶️ Playing: {video_path.name}")
         except Exception as e:
             logger.error(f"Error playing video: {e}")
-            self.log_event(f"Error playing video: {e}")
+            self.log_event(f"❌ Error playing video: {e}")
+
+    def vlc_pause(self):
+        """Pause the video."""
+        try:
+            self.media_player.pause()
+            self.log_event("⏸️ Paused")
+        except Exception as e:
+            logger.error(f"Error pausing video: {e}")
+
+    def vlc_stop(self):
+        """Stop the video."""
+        try:
+            self.media_player.stop()
+            self.log_event("⏹️ Stopped")
+        except Exception as e:
+            logger.error(f"Error stopping video: {e}")
     
     def add_images(self):
         """Add images from file dialog."""
@@ -875,6 +936,12 @@ class SlideshowManager(QMainWindow):
     def closeEvent(self, event):
         """Handle window close event gracefully."""
         try:
+            # Stop VLC player
+            try:
+                self.media_player.stop()
+            except:
+                pass
+
             # Stop background thumbnail loading thread
             self.stop_loading = True
             if self.thumbnail_loader_thread and self.thumbnail_loader_thread.is_alive():
