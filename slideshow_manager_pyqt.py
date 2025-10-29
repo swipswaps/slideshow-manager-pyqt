@@ -285,6 +285,49 @@ class RoundedButton(QPushButton):
         self.setFlat(False)
 
 
+class ClickableSlider(QSlider):
+    """Custom QSlider that allows clicking anywhere on the slider to jump to that position."""
+
+    def __init__(self, orientation=Qt.Horizontal, parent=None):
+        super().__init__(orientation, parent)
+
+    def mousePressEvent(self, event):
+        """Handle mouse press to jump to clicked position."""
+        if event.button() == Qt.LeftButton:
+            # Calculate the value based on click position
+            if self.orientation() == Qt.Horizontal:
+                # Get the position relative to the slider
+                click_pos = event.pos().x()
+                slider_width = self.width()
+
+                # Calculate the value (accounting for handle width)
+                value_range = self.maximum() - self.minimum()
+                new_value = self.minimum() + (click_pos / slider_width) * value_range
+
+                # Set the value and emit signals
+                self.setValue(int(new_value))
+                self.sliderPressed.emit()
+                self.sliderMoved.emit(int(new_value))
+                self.sliderReleased.emit()
+            else:
+                # Vertical slider
+                click_pos = event.pos().y()
+                slider_height = self.height()
+
+                # Calculate the value (inverted for vertical)
+                value_range = self.maximum() - self.minimum()
+                new_value = self.maximum() - (click_pos / slider_height) * value_range
+
+                # Set the value and emit signals
+                self.setValue(int(new_value))
+                self.sliderPressed.emit()
+                self.sliderMoved.emit(int(new_value))
+                self.sliderReleased.emit()
+        else:
+            # Let the default behavior handle other buttons
+            super().mousePressEvent(event)
+
+
 class DraggableThumbnail(QPushButton):
     """Thumbnail button that supports drag-and-drop."""
 
@@ -1198,9 +1241,8 @@ class SlideshowManager(QMainWindow):
         seek_layout = QVBoxLayout()
         seek_layout.setSpacing(5)
 
-        # Progress slider
-        from PyQt5.QtWidgets import QSlider
-        self.seek_slider = QSlider(Qt.Horizontal)
+        # Progress slider - using custom ClickableSlider for click-to-seek functionality
+        self.seek_slider = ClickableSlider(Qt.Horizontal)
         self.seek_slider.setMinimum(0)
         self.seek_slider.setMaximum(1000)
         self.seek_slider.setValue(0)
