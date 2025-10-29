@@ -1136,9 +1136,11 @@ class SlideshowManager(QMainWindow):
 
         # Splitter for resizable sections
         splitter = QSplitter(Qt.Vertical)
-        # Disable opaque resizing to prevent flickering and screen scrambling
-        splitter.setOpaqueResize(False)
+        # Enable opaque resizing for smooth, live resizing (default behavior)
+        # Set to True for better UX - widgets resize in real-time as you drag
+        splitter.setOpaqueResize(True)
         splitter.setHandleWidth(6)
+        splitter.setChildrenCollapsible(True)
         splitter.setStyleSheet("""
             QSplitter::handle {
                 background-color: #3d3d3d;
@@ -1180,9 +1182,11 @@ class SlideshowManager(QMainWindow):
         """Create video player panel with embedded VLC and playlist functionality."""
         # Create main vertical splitter for player and playlist (THIRD RESIZE HANDLE)
         main_splitter = QSplitter(Qt.Vertical)
-        # Disable opaque resizing to prevent flickering and screen scrambling
-        main_splitter.setOpaqueResize(False)
+        # Enable opaque resizing for smooth, live resizing (default behavior)
+        # Set to True for better UX - widgets resize in real-time as you drag
+        main_splitter.setOpaqueResize(True)
         main_splitter.setHandleWidth(6)
+        main_splitter.setChildrenCollapsible(True)
         main_splitter.setStyleSheet("""
             QSplitter::handle {
                 background-color: #3d3d3d;
