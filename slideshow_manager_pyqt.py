@@ -1136,6 +1136,18 @@ class SlideshowManager(QMainWindow):
 
         # Splitter for resizable sections
         splitter = QSplitter(Qt.Vertical)
+        # Disable opaque resizing to prevent flickering and screen scrambling
+        splitter.setOpaqueResize(False)
+        splitter.setHandleWidth(6)
+        splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: #3d3d3d;
+                border: 1px solid #555;
+            }
+            QSplitter::handle:hover {
+                background-color: #0d7377;
+            }
+        """)
 
         # Thumbnails panel with statistics (FIRST)
         thumbnails_panel = self.create_thumbnails_panel()
@@ -1168,6 +1180,8 @@ class SlideshowManager(QMainWindow):
         """Create video player panel with embedded VLC and playlist functionality."""
         # Create main vertical splitter for player and playlist (THIRD RESIZE HANDLE)
         main_splitter = QSplitter(Qt.Vertical)
+        # Disable opaque resizing to prevent flickering and screen scrambling
+        main_splitter.setOpaqueResize(False)
         main_splitter.setHandleWidth(6)
         main_splitter.setStyleSheet("""
             QSplitter::handle {
@@ -1853,9 +1867,13 @@ class SlideshowManager(QMainWindow):
                         self.thumbnail_cache[img_path] = pixmap
 
                 # Update button on main thread using QTimer
+                # Store pixmap in cache BEFORE scheduling UI update to prevent garbage collection
                 if i in self.thumbnail_buttons and pixmap:
                     btn = self.thumbnail_buttons[i]
-                    QTimer.singleShot(0, lambda b=btn, p=pixmap: self._update_thumbnail_ui(b, p))
+                    # Create a wrapper function to ensure strong references
+                    def update_ui(button=btn, pm=pixmap):
+                        self._update_thumbnail_ui(button, pm)
+                    QTimer.singleShot(0, update_ui)
             except Exception as e:
                 logger.error(f"Error loading video thumbnail {i}: {e}")
 
@@ -2155,9 +2173,17 @@ class SlideshowManager(QMainWindow):
             self.select_all_state = 0
             self.btn_select_all.setText("☑️ Select All")
 
-        # Refresh thumbnails to update checkboxes
-        self.update_thumbnails()
+        # Update borders only - don't recreate thumbnails (prevents losing loaded images)
+        self._update_all_thumbnail_borders()
         self.update_statistics()
+
+    def _update_all_thumbnail_borders(self):
+        """Update all thumbnail borders without recreating them."""
+        if hasattr(self, 'thumbnails_layout'):
+            for i in range(self.thumbnails_layout.count()):
+                widget = self.thumbnails_layout.itemAt(i).widget()
+                if isinstance(widget, QPushButton) and hasattr(widget, 'index'):
+                    self._update_thumbnail_border(widget, widget.index)
 
     def update_statistics(self):
         """Update statistics display."""
