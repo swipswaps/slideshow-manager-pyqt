@@ -343,8 +343,11 @@ class DraggableThumbnail(QPushButton):
 
         # Set thumbnail image or placeholder
         if pixmap:
-            self.setIcon(QIcon(pixmap))
+            # Keep references to prevent garbage collection
+            icon = QIcon(pixmap)
+            self.setIcon(icon)
             self.setIconSize(QSize(90, 90))
+            self._icon = icon  # Store icon reference
         else:
             # Placeholder based on file type
             if self.file_path.suffix.lower() in VIDEO_FORMATS:
@@ -441,8 +444,11 @@ class TimelineThumbnail(QPushButton):
 
         # Set thumbnail image or placeholder
         if pixmap:
-            self.setIcon(QIcon(pixmap))
+            # Keep references to prevent garbage collection
+            icon = QIcon(pixmap)
+            self.setIcon(icon)
             self.setIconSize(QSize(70, 70))
+            self._icon = icon  # Store icon reference
         else:
             if self.file_path.suffix.lower() in VIDEO_FORMATS:
                 self.setText("📹")
@@ -1856,12 +1862,15 @@ class SlideshowManager(QMainWindow):
     def _update_thumbnail_ui(self, btn, pixmap):
         """Update thumbnail UI on main thread."""
         try:
-            btn.setIcon(QIcon(pixmap))
+            # CRITICAL: Keep references to both pixmap AND icon to prevent garbage collection
+            # QIcon needs the underlying pixmap to remain valid
+            icon = QIcon(pixmap)
+            btn.setIcon(icon)
             btn.setIconSize(QSize(120, 120))
             btn.setText("")  # Clear placeholder text
-            # CRITICAL: Keep a reference to the pixmap to prevent garbage collection
-            # This is the same pattern used in Tkinter (thumb_label.image = thumb)
+            # Store references to prevent garbage collection
             btn._pixmap = pixmap
+            btn._icon = icon
         except Exception as e:
             logger.error(f"Error updating thumbnail UI: {e}")
 
@@ -2581,9 +2590,12 @@ class SlideshowManager(QMainWindow):
                 # Set thumbnail or placeholder
                 if video_path in self.thumbnail_cache:
                     pixmap = self.thumbnail_cache[video_path]
-                    btn.setIcon(QIcon(pixmap))
+                    icon = QIcon(pixmap)
+                    btn.setIcon(icon)
                     btn.setIconSize(QSize(140, 140))
-                    btn._pixmap = pixmap  # Keep reference
+                    # Keep references to prevent garbage collection
+                    btn._pixmap = pixmap
+                    btn._icon = icon
                 else:
                     btn.setText("📹")
                     btn.setStyleSheet(btn.styleSheet() + "font-size: 48px;")
